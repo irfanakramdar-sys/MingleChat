@@ -106,8 +106,33 @@ function loginEmail(phone) {
 }
 
 async function getMyProfile() {
-  const { data, error } = await db().rpc("ensure_my_profile");
-  if (error) throw new Error(error.message);
+  const client = db();
+  const { data: userData, error: userError } = await client.auth.getUser();
+  if (userError) throw new Error(userError.message);
+  if (!userData.user) throw new Error("Your account session expired. Please log in again.");
+
+  const { data: existingProfile, error: profileError } = await client
+    .from("profiles")
+    .select("*")
+    .eq("id", userData.user.id)
+    .maybeSingle();
+  if (profileError) throw new Error(`Could not load your account profile: ${profileError.message}`);
+
+  if (existingProfile) {
+    const authEmail = userData.user.email?.trim().toLowerCase() || "";
+    const email = /^m[0-9]{10}@accounts\.mingle\.invalid$/.test(authEmail)
+      ? existingProfile.email
+      : authEmail || existingProfile.email;
+    return mapProfile({ ...existingProfile, email });
+  }
+
+  const { data, error } = await client.rpc("ensure_my_profile");
+  if (error) {
+    if (error.message.includes("This account does not use a valid Mingle mobile number.")) {
+      throw new Error("Your Mingle database still has the old login setup. In Supabase, open SQL Editor and run the latest chat-app/supabase/schema.sql file, then log in again. Your account and chats will not be deleted.");
+    }
+    throw new Error(error.message);
+  }
   const row = Array.isArray(data) ? data[0] : data;
   if (!row) throw new Error("Your account profile could not be loaded. Please log in again.");
   return mapProfile(row);
@@ -521,7 +546,8 @@ async function showApp(userProfile) {
 
   if ("serviceWorker" in navigator && window.isSecureContext) {
     try {
-      await navigator.serviceWorker.register("./sw.js");
+      const registration = await navigator.serviceWorker.register("./sw.js");
+      await registration.update();
     } catch (error) {
       console.error("Offline website caching could not be set up:", error);
     }
