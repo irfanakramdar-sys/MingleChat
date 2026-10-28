@@ -1,0 +1,7 @@
+.vs/
+**/bin/
+**/obj/
+**/App_Data/
+server/publish-test/
+android-app/*.apk
+android-app/*.aab
