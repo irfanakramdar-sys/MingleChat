@@ -37,7 +37,7 @@ Accounts and messages from the old self-hosted server are not migrated automatic
 
 ## Build locally
 
-Install Node.js 20 or later, set the Supabase values above, and run these commands from this folder:
+Install Node.js 22 or later, set the Supabase values above, and run these commands from this folder:
 
 ```powershell
 npm ci
