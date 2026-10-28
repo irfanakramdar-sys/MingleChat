@@ -92,7 +92,7 @@ begin
     raise exception 'Enter a name between 1 and 40 characters.';
   end if;
 
-  v_phone := pg_catalog.substring(v_email from '^m([0-9]{10})@accounts\.mingle\.invalid$');
+  v_phone := pg_catalog.substring(v_email, '^m([0-9]{10})@accounts\.mingle\.invalid$');
 
   select p.* into v_profile
   from public.profiles as p
