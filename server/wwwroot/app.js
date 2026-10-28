@@ -1,3 +1,6 @@
+import { createClient } from "@supabase/supabase-js";
+import { SUPABASE_ANON_KEY, SUPABASE_URL } from "./supabase-config.js";
+
 const $ = (selector) => document.querySelector(selector);
 const authScreen = $("#authScreen");
 const appShell = $("#appShell");
@@ -22,34 +25,94 @@ let chats = [];
 let currentPeer = null;
 let page = "chats";
 let refreshTimer = null;
-let eventController = null;
+let liveChannel = null;
 let messageTimer = null;
 let toastTimer = null;
-let pushKey = null;
+let lastChatRefreshError = null;
+let lastMessageLoadError = null;
+
+function isPublicSupabaseKey(key) {
+  if (key.startsWith("sb_publishable_")) return true;
+  const encodedPayload = key.split(".")[1];
+  if (!encodedPayload) return false;
+
+  try {
+    const paddedPayload = encodedPayload.replace(/-/g, "+").replace(/_/g, "/");
+    const payload = JSON.parse(atob(paddedPayload + "=".repeat((4 - paddedPayload.length % 4) % 4)));
+    return payload.role === "anon";
+  } catch {
+    return false;
+  }
+}
+
+function createSupabaseClient() {
+  const url = SUPABASE_URL.trim();
+  const key = SUPABASE_ANON_KEY.trim();
+  if (!url || !isPublicSupabaseKey(key)) return null;
+
+  try {
+    const projectUrl = new URL(url);
+    if (projectUrl.protocol !== "https:" || projectUrl.username || projectUrl.password) return null;
+    return createClient(projectUrl.toString(), key);
+  } catch (error) {
+    console.error("Could not initialize Supabase. Check the public project settings:", error);
+    return null;
+  }
+}
+
+const supabase = createSupabaseClient();
 
 const escapeText = (text) => String(text).replace(/[&<>"']/g, (character) => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
 })[character]);
 
-async function request(path, options = {}) {
-  const headers = new Headers(options.headers || {});
-  headers.set("Accept", "application/json");
-  if (options.body) headers.set("Content-Type", "application/json");
-  if (options.method && options.method !== "GET") headers.set("X-Requested-With", "Mingle");
-
-  const response = await fetch(path, {
-    ...options,
-    headers,
-    credentials: "same-origin",
-    cache: "no-store"
-  });
-  const data = response.status === 204 ? null : await response.json().catch(() => null);
-  if (!response.ok) {
-    const error = new Error(data?.error || `The request failed (${response.status}).`);
-    error.status = response.status;
-    throw error;
+function db() {
+  if (!supabase) {
+    throw new Error("Chat is not configured yet. Ask the site owner to finish the Supabase setup.");
   }
-  return data;
+  return supabase;
+}
+
+function mapProfile(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    name: row.name,
+    phone: row.phone,
+    accountNumber: row.account_number,
+    createdAt: row.created_at
+  };
+}
+
+function mapMessage(row) {
+  return {
+    id: row.id,
+    senderId: row.sender_id,
+    recipientId: row.recipient_id,
+    text: row.text,
+    createdAt: row.created_at,
+    readAt: row.read_at
+  };
+}
+
+function loginEmail(phone) {
+  return `m${phone}@accounts.mingle.invalid`;
+}
+
+async function getMyProfile() {
+  const { data, error } = await db().rpc("ensure_my_profile");
+  if (error) throw new Error(error.message);
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row) throw new Error("Your account profile could not be loaded. Please log in again.");
+  return mapProfile(row);
+}
+
+async function findProfile(accountNumber) {
+  const { data, error } = await db().rpc("lookup_profile", { p_account_number: accountNumber });
+  if (error) throw new Error(error.message);
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row) throw new Error("No account matches that number.");
+  return mapProfile(row);
 }
 
 function showAuthError(message) {
@@ -114,13 +177,11 @@ function playNotification() {
 }
 
 function notifyIncoming(event) {
-  void refreshChats();
-  if (currentPeer?.accountNumber === event.senderAccountNumber) {
+  if (currentPeer?.id === event.senderId) {
     void loadMessages();
     return;
   }
 
-  const message = `${event.senderName}: ${event.preview}`;
   if (playNotification()) {
     const notification = new Notification(event.senderName, {
       body: event.preview,
@@ -134,70 +195,72 @@ function notifyIncoming(event) {
       notification.close();
     };
   } else {
-    showToast(message, event.senderAccountNumber);
-  }
-}
-
-async function fetchEvents(signal) {
-  const response = await fetch("/api/events", {
-    headers: { Accept: "text/event-stream" },
-    credentials: "same-origin",
-    cache: "no-store",
-    signal
-  });
-  if (response.status === 401) throw new Error("Please log in again to receive messages.");
-  if (!response.ok || !response.body) throw new Error("Live connection unavailable.");
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let pending = "";
-  while (!signal.aborted) {
-    const { done, value } = await reader.read();
-    if (done) throw new Error("The live connection closed.");
-    pending += decoder.decode(value, { stream: true });
-    let boundary;
-    while ((boundary = pending.indexOf("\n\n")) !== -1) {
-      const block = pending.slice(0, boundary);
-      pending = pending.slice(boundary + 2);
-      const dataLine = block.split("\n").find((line) => line.startsWith("data: "));
-      if (!dataLine) continue;
-      try {
-        const event = JSON.parse(dataLine.slice(6));
-        if (event.type === "message" && event.senderId !== profile.id) notifyIncoming(event);
-        else if (event.type === "messages-read" || event.type === "chat-changed") void refreshChats();
-      } catch (error) {
-        console.error("Could not read the live message event:", error);
-      }
-    }
+    showToast(`${event.senderName}: ${event.preview}`, event.senderAccountNumber);
   }
 }
 
 function startLiveConnection() {
-  if (eventController) eventController.abort();
-  eventController = new AbortController();
-  const { signal } = eventController;
-  const connect = async () => {
-    while (!signal.aborted) {
-      try {
-        await fetchEvents(signal);
-      } catch (error) {
-        if (signal.aborted) return;
-        console.warn("Live chat disconnected; reconnecting:", error.message);
-        await new Promise((resolve) => setTimeout(resolve, 1500));
+  if (liveChannel) void db().removeChannel(liveChannel);
+  liveChannel = db()
+    .channel(`messages:${profile.id}`)
+    .on("postgres_changes", {
+      event: "INSERT",
+      schema: "public",
+      table: "messages",
+      filter: `recipient_id=eq.${profile.id}`
+    }, (payload) => {
+      void (async () => {
+        await refreshChats();
+        const sender = chats.find((chat) => chat.id === payload.new.sender_id);
+        if (!sender) return;
+        notifyIncoming({
+          senderId: sender.id,
+          senderName: sender.name,
+          senderAccountNumber: sender.accountNumber,
+          preview: payload.new.text
+        });
+      })().catch((error) => console.error("Could not process an incoming message:", error));
+    })
+    .on("postgres_changes", {
+      event: "UPDATE",
+      schema: "public",
+      table: "messages",
+      filter: `sender_id=eq.${profile.id}`
+    }, (payload) => {
+      if (payload.new.read_at && currentPeer?.id === payload.new.recipient_id) {
+        void loadMessages();
       }
-    }
-  };
-  void connect();
+      void refreshChats();
+    })
+    .subscribe((status, error) => {
+      if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+        console.error("The live chat connection failed:", error?.message || status);
+      }
+    });
 }
 
 async function refreshChats() {
   if (!profile) return;
   try {
-    chats = await request("/api/chats");
+    const { data, error } = await db().rpc("get_chat_summaries");
+    if (error) throw new Error(error.message);
+    chats = (data || []).map((chat) => ({
+      id: chat.id,
+      name: chat.name,
+      phone: chat.phone,
+      accountNumber: chat.account_number,
+      createdAt: chat.created_at,
+      lastMessage: chat.last_message,
+      lastSenderId: chat.last_sender_id,
+      updatedAt: chat.updated_at,
+      unread: Number(chat.unread)
+    }));
+    lastChatRefreshError = null;
     renderChats();
   } catch (error) {
-    if (error.status === 401) showLogin();
-    else console.error("Could not refresh chats:", error);
+    console.error("Could not refresh chats:", error);
+    if (lastChatRefreshError !== error.message) showToast(`Could not load chats: ${error.message}`);
+    lastChatRefreshError = error.message;
   }
 }
 
@@ -232,16 +295,17 @@ function renderChats() {
 }
 
 function showLogin() {
-  if (eventController) eventController.abort();
+  if (liveChannel) void db().removeChannel(liveChannel);
+  liveChannel = null;
   clearInterval(refreshTimer);
   clearInterval(messageTimer);
-  eventController = null;
   profile = null;
   currentPeer = null;
   chats = [];
   authScreen.hidden = false;
   appShell.hidden = true;
   messenger.classList.remove("show-chat", "show-page");
+  passwordInput.value = "";
   passwordInput.value = "";
   setAuthMode("login");
 }
@@ -261,19 +325,15 @@ async function showApp(userProfile) {
 
   if ("serviceWorker" in navigator && window.isSecureContext) {
     try {
-      const registration = await navigator.serviceWorker.register("./sw.js");
-      registration.active?.postMessage({ type: "SET_PUBLIC_KEY", publicKey: await getPushKey() });
-      navigator.serviceWorker.addEventListener("message", (event) => {
-        if (event.data?.type === "OPEN_CHAT" && event.data.accountNumber) void openChat(event.data.accountNumber);
-      });
+      await navigator.serviceWorker.register("./sw.js");
     } catch (error) {
-      console.error("Background notifications could not be set up:", error);
+      console.error("Offline website caching could not be set up:", error);
     }
   }
 
   const targetAccount = new URLSearchParams(location.search).get("chat");
   if (targetAccount && /^\d{8}$/.test(targetAccount) && targetAccount !== profile.accountNumber) {
-    history.replaceState(null, "", "/");
+    history.replaceState(null, "", location.pathname);
     await openChat(targetAccount);
   }
 }
@@ -304,12 +364,26 @@ async function handleAuthentication(event) {
   authSubmit.disabled = true;
   authSubmit.textContent = authMode === "create" ? "Creating account..." : "Logging in...";
   try {
-    const authEndpoint = authMode === "create" ? "register" : "login";
-    const result = await request(`/api/auth/${authEndpoint}`, {
-      method: "POST",
-      body: JSON.stringify({ phone, password, name })
-    });
-    await showApp(result.profile);
+    if (authMode === "create") {
+      const { data, error } = await db().auth.signUp({
+        email: loginEmail(phone),
+        password,
+        options: { data: { name } }
+      });
+      if (error) throw new Error(error.message);
+      if (!data.session) {
+        throw new Error("Account created, but Supabase is asking for email confirmation. The site owner must turn off email confirmations in Supabase Auth settings.");
+      }
+      await showApp(await getMyProfile());
+    } else {
+      const { data, error } = await db().auth.signInWithPassword({
+        email: loginEmail(phone),
+        password
+      });
+      if (error) throw new Error(error.message);
+      if (!data.session) throw new Error("Login did not create a session. Please try again.");
+      await showApp(await getMyProfile());
+    }
   } catch (error) {
     showAuthError(error.message);
   } finally {
@@ -327,7 +401,7 @@ function renderWelcome() {
 async function openChat(accountNumber) {
   if (messageTimer) clearInterval(messageTimer);
   try {
-    currentPeer = await request(`/api/users/${encodeURIComponent(accountNumber)}`);
+    currentPeer = await findProfile(accountNumber);
     page = "chats";
     updateNav("chats");
     $("#listTitle").textContent = "Messages";
@@ -365,7 +439,7 @@ async function openChat(accountNumber) {
       messageInput.style.height = `${Math.min(messageInput.scrollHeight, 112)}px`;
     });
     await loadMessages();
-    messageTimer = setInterval(() => void loadMessages(), 3000);
+    messageTimer = setInterval(() => void loadMessages(), 15000);
     renderChats();
     messageInput.focus();
   } catch (error) {
@@ -376,7 +450,23 @@ async function openChat(accountNumber) {
 async function loadMessages() {
   if (!currentPeer) return;
   try {
-    const messages = await request(`/api/chats/${encodeURIComponent(currentPeer.accountNumber)}/messages`);
+    const peer = currentPeer;
+    const { data, error } = await db()
+      .from("messages")
+      .select("id,sender_id,recipient_id,text,created_at,read_at")
+      .or(`and(sender_id.eq.${profile.id},recipient_id.eq.${peer.id}),and(sender_id.eq.${peer.id},recipient_id.eq.${profile.id})`)
+      .order("created_at", { ascending: true })
+      .limit(500);
+    if (error) throw new Error(error.message);
+    const messages = (data || []).map(mapMessage);
+    if (!currentPeer || currentPeer.id !== peer.id) return;
+    const { error: readError } = await db()
+      .from("messages")
+      .update({ read_at: new Date().toISOString() })
+      .eq("sender_id", peer.id)
+      .eq("recipient_id", profile.id)
+      .is("read_at", null);
+    if (readError) throw new Error(readError.message);
     if (!currentPeer) return;
     const messageList = $("#messageList");
     if (!messageList) return;
@@ -400,17 +490,12 @@ async function loadMessages() {
       messageList.append(bubble);
     }
     if (wasNearBottom || messages.length <= 1) messageList.scrollTop = messageList.scrollHeight;
+    lastMessageLoadError = null;
     void refreshChats();
   } catch (error) {
     console.error("Could not load messages:", error);
-    if (error.status === 404) {
-      clearInterval(messageTimer);
-      currentPeer = null;
-      messenger.classList.remove("show-chat");
-      renderWelcome();
-    } else if (error.status === 401) {
-      showLogin();
-    }
+    if (lastMessageLoadError !== error.message) showToast(`Could not load messages: ${error.message}`);
+    lastMessageLoadError = error.message;
   }
 }
 
@@ -422,10 +507,12 @@ async function sendMessage(event) {
   const button = $("#messageForm button[type=submit]");
   button.disabled = true;
   try {
-    await request(`/api/chats/${encodeURIComponent(currentPeer.accountNumber)}/messages`, {
-      method: "POST",
-      body: JSON.stringify({ text })
+    const { error } = await db().from("messages").insert({
+      sender_id: profile.id,
+      recipient_id: currentPeer.id,
+      text
     });
+    if (error) throw new Error(error.message);
     input.value = "";
     input.style.height = "auto";
     input.focus();
@@ -454,7 +541,7 @@ function renderProfile(person = profile) {
   const ownFields = isMe
     ? `<div class="profile-section"><div class="profile-label">Your account number</div><div class="profile-value" id="ownAccountNumber"></div>
         <button id="copyAccountNumber" class="notification-button" type="button">Copy account number</button></div>
-       <div class="profile-section"><div class="profile-label">Notifications</div>
+       <div class="profile-section"><div class="profile-label">Notifications while Mingle is open</div>
         <button id="notificationButton" class="notification-button" type="button">Enable notifications on this device</button></div>
        <button id="logoutButton" class="danger-button" type="button">Log out</button>`
     : `<button id="messageThisPerson" class="primary message-profile-button" type="button">Send a message</button>`;
@@ -463,7 +550,7 @@ function renderProfile(person = profile) {
       <span class="person-name">${isMe ? "Your profile" : "Contact profile"}</span>
     </header>
     <section class="profile-content"><h2>${isMe ? "Your account" : "Contact details"}</h2>
-      <p class="content-description">${isMe ? "Your account details are saved securely on this chat server." : "Check this person's account details before sending them a message."}</p>
+      <p class="content-description">${isMe ? "Your account details are saved securely in the Mingle database." : "Check this person's account details before sending them a message."}</p>
       <div class="profile-card"><span class="avatar">${escapeText(initials(person.name))}</span>
         <div><div class="profile-name">${escapeText(person.name)}</div><div class="profile-detail">Member since ${escapeText(new Date(person.createdAt).toLocaleDateString())}</div></div></div>
       <div class="profile-label">Mobile number</div><div class="profile-value">${escapeText(person.phone)}</div>
@@ -487,7 +574,8 @@ function renderProfile(person = profile) {
     $("#notificationButton").addEventListener("click", () => void enableNotifications());
     $("#logoutButton").addEventListener("click", async () => {
       try {
-        await request("/api/auth/logout", { method: "POST", body: "{}" });
+        const { error } = await db().auth.signOut();
+        if (error) throw new Error(error.message);
         showLogin();
       } catch (error) {
         showToast(error.message);
@@ -519,7 +607,7 @@ async function findAccount(event) {
   }
   $("#startChatSubmit").disabled = true;
   try {
-    const person = await request(`/api/users/${encodeURIComponent(accountNumber)}`);
+    const person = await findProfile(accountNumber);
     dialog.close();
     accountNumberInput.value = "";
     dialogError.hidden = true;
@@ -532,23 +620,9 @@ async function findAccount(event) {
   }
 }
 
-async function getPushKey() {
-  if (!pushKey) {
-    const response = await request("/api/notifications/public-key");
-    pushKey = response.publicKey;
-  }
-  return pushKey;
-}
-
-function decodeBase64Url(value) {
-  const padded = value.replace(/-/g, "+").replace(/_/g, "/");
-  const binary = atob(padded + "=".repeat((4 - padded.length % 4) % 4));
-  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
-}
-
 async function enableNotifications() {
   const button = $("#notificationButton");
-  if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
+  if (!("Notification" in window)) {
     button.textContent = "Notifications are not supported in this browser";
     return;
   }
@@ -563,18 +637,6 @@ async function enableNotifications() {
       button.textContent = "Allow notifications in your browser settings";
       return;
     }
-    const registration = await navigator.serviceWorker.ready;
-    let subscription = await registration.pushManager.getSubscription();
-    if (!subscription) {
-      subscription = await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: decodeBase64Url(await getPushKey())
-      });
-    }
-    await request("/api/notifications/subscribe", {
-      method: "POST",
-      body: JSON.stringify(subscription.toJSON())
-    });
     button.textContent = "Notifications enabled on this device";
   } catch (error) {
     button.textContent = `Could not enable notifications: ${error.message}`;
@@ -605,13 +667,17 @@ async function initialize() {
   });
   dialog.addEventListener("click", (event) => { if (event.target === dialog) dialog.close(); });
   window.addEventListener("online", () => { if (profile) void refreshChats(); });
-  window.addEventListener("beforeunload", () => eventController?.abort());
 
   try {
-    const result = await request("/api/me");
-    await showApp(result.profile);
+    if (!supabase) {
+      showAuthError("Mingle is not configured yet. The site owner must add a valid Supabase project URL and public anon or publishable key.");
+      return;
+    }
+    const { data, error } = await db().auth.getSession();
+    if (error) throw new Error(error.message);
+    if (data.session) await showApp(await getMyProfile());
   } catch (error) {
-    if (error.status !== 401) showAuthError(error.message);
+    showAuthError(error.message);
   }
 }
 

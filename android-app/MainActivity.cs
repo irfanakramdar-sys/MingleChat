@@ -74,7 +74,7 @@ public sealed class MainActivity : Activity
 
         var description = new TextView(this)
         {
-            Text = "Connect to your Mingle server to start chatting.",
+            Text = "Open your hosted Mingle website to start chatting.",
             TextSize = 16
         };
         description.SetTextColor(Muted);
@@ -83,7 +83,7 @@ public sealed class MainActivity : Activity
 
         var label = new TextView(this)
         {
-            Text = "Server HTTPS address",
+            Text = "Mingle website HTTPS address",
             TextSize = 14,
             Typeface = Typeface.Create("sans-serif-medium", TypefaceStyle.Normal)
         };
@@ -92,7 +92,7 @@ public sealed class MainActivity : Activity
 
         _serverInput = new EditText(this)
         {
-            Hint = "https://your-mingle-server.example.com",
+            Hint = "https://your-name.github.io/MingleChat/",
             InputType = InputTypes.ClassText | InputTypes.TextVariationUri,
             ImeOptions = ImeAction.Go,
             Text = currentServer ?? string.Empty
@@ -112,7 +112,7 @@ public sealed class MainActivity : Activity
 
         var note = new TextView(this)
         {
-            Text = "A public HTTPS server address is needed before accounts and messages can work. You can enter it here after hosting is ready.",
+            Text = "Enter the public HTTPS address of your Mingle website. Accounts and messages use its online database.",
             TextSize = 13
         };
         note.SetTextColor(Muted);
@@ -165,7 +165,7 @@ public sealed class MainActivity : Activity
 
         var changeServer = new Button(this)
         {
-            Text = "Server"
+            Text = "Website"
         };
         changeServer.Click += (_, _) => ShowServerSetup(serverUrl);
         toolbar.AddView(changeServer, WrapWrap());
