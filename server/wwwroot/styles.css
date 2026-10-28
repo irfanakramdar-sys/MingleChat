@@ -99,11 +99,19 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visib
 .message { width: fit-content; max-width: min(78%, 410px); padding: 9px 11px 6px; border: 1px solid #edf0ed; border-radius: 12px 12px 12px 3px; background: #fff; color: #334139; font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; }
 .message.mine { align-self: flex-end; border-color: #d7eddd; border-radius: 12px 12px 3px 12px; background: #e9f4e9; }
 .message-meta { margin-top: 3px; color: #96a19a; font-size: 9px; text-align: right; }
+.message-image, .message-video { display: block; width: min(100%, 300px); max-height: 340px; border-radius: 9px; object-fit: cover; }
+.message-video { background: #19251e; object-fit: contain; }
+.message + .message .message-image, .message + .message .message-video { margin-top: 4px; }
 .deleted-message { color: #829087; font-style: italic; }
 .message-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 4px; }
 .message-actions button { padding: 2px 0; border: 0; background: transparent; color: #667e6e; font-size: 9px; }
-.composer { display: flex; align-items: flex-end; gap: 9px; padding: 11px 13px max(11px, env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: #fff; }
-.composer textarea { min-height: 43px; max-height: 112px; flex: 1; resize: none; padding: 12px 13px; border: 1px solid #e4eae5; border-radius: 13px; outline: none; background: #f9faf9; color: #26352c; font-size: 12px; line-height: 1.45; }
+.composer { display: flex; align-items: flex-end; gap: 7px; padding: 11px 13px max(11px, env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: #fff; }
+.attachment-input { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; clip-path: inset(50%); }
+.attach-button { width: 39px; height: 43px; display: grid; flex: 0 0 auto; place-items: center; border: 1px solid #e4eae5; border-radius: 12px; background: #f9faf9; color: var(--green); font-size: 24px; font-weight: 400; cursor: pointer; }
+.attach-button:focus-within { outline: 3px solid #29836266; outline-offset: 3px; }
+.attachment-preview { max-width: 82px; overflow: hidden; color: #557361; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.remove-attachment-button { width: 24px; height: 24px; flex: 0 0 auto; border: 0; border-radius: 50%; background: #f1f3f1; color: #6d7a71; font-size: 18px; line-height: 1; }
+.composer textarea { min-width: 0; min-height: 43px; max-height: 112px; flex: 1; resize: none; padding: 12px 13px; border: 1px solid #e4eae5; border-radius: 13px; outline: none; background: #f9faf9; color: #26352c; font-size: 12px; line-height: 1.45; }
 .send-button { width: 43px; height: 43px; display: grid; flex: 0 0 auto; place-items: center; border: 0; border-radius: 13px; background: var(--green); color: white; }
 .send-button svg { width: 18px; height: 18px; }
 .profile-content { flex: 1; overflow-y: auto; padding: 26px clamp(17px, 4vw, 40px); }

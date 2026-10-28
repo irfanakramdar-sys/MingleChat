@@ -21,12 +21,14 @@ public sealed class MainActivity : Activity
 {
     private const string ServerPreference = "server_url";
     private const string DefaultServerUrl = "https://irfanakramdar-sys.github.io/MingleChat/";
+    private const int MediaPickerRequestCode = 4107;
     private static readonly Color Ink = Color.Rgb(32, 46, 39);
     private static readonly Color Muted = Color.Rgb(104, 119, 110);
     private static readonly Color Green = Color.Rgb(22, 119, 88);
     private LinearLayout? _root;
     private EditText? _serverInput;
     private WebView? _webView;
+    private IValueCallback? _mediaPickerCallback;
 
     protected override void OnCreate(Bundle? savedInstanceState)
     {
@@ -41,9 +43,26 @@ public sealed class MainActivity : Activity
 
     protected override void OnDestroy()
     {
+        _mediaPickerCallback?.OnReceiveValue(null);
+        _mediaPickerCallback = null;
         _webView?.Destroy();
         _webView = null;
         base.OnDestroy();
+    }
+
+    protected override void OnActivityResult(int requestCode, Result resultCode, Intent? data)
+    {
+        base.OnActivityResult(requestCode, resultCode, data);
+        if (requestCode != MediaPickerRequestCode)
+        {
+            return;
+        }
+
+        var callback = _mediaPickerCallback;
+        _mediaPickerCallback = null;
+        callback?.OnReceiveValue(resultCode == Result.Ok
+            ? WebChromeClient.FileChooserParams.ParseResult((int)resultCode, data)
+            : null);
     }
 
     private void ShowServerSetup(string? currentServer)
@@ -173,7 +192,7 @@ public sealed class MainActivity : Activity
         _webView.Settings.JavaScriptCanOpenWindowsAutomatically = false;
         _webView.Settings.MixedContentMode = MixedContentHandling.NeverAllow;
         _webView.SetWebViewClient(new MingleWebViewClient(new Uri(serverUrl).Authority));
-        _webView.SetWebChromeClient(new WebChromeClient());
+        _webView.SetWebChromeClient(new MingleWebChromeClient(this));
         _root.AddView(_webView, new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MatchParent,
             0,
@@ -198,6 +217,35 @@ public sealed class MainActivity : Activity
             var destination = request?.Url;
             return destination?.Scheme != Uri.UriSchemeHttps
                 || !string.Equals(destination.Authority, serverAuthority, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    private sealed class MingleWebChromeClient(MainActivity activity) : WebChromeClient
+    {
+        public override bool OnShowFileChooser(
+            WebView? webView,
+            IValueCallback? filePathCallback,
+            FileChooserParams? fileChooserParams)
+        {
+            activity._mediaPickerCallback?.OnReceiveValue(null);
+            activity._mediaPickerCallback = filePathCallback;
+            if (fileChooserParams is null || filePathCallback is null)
+            {
+                activity._mediaPickerCallback = null;
+                return false;
+            }
+
+            try
+            {
+                activity.StartActivityForResult(fileChooserParams.CreateIntent(), MediaPickerRequestCode);
+                return true;
+            }
+            catch (ActivityNotFoundException)
+            {
+                activity._mediaPickerCallback = null;
+                filePathCallback.OnReceiveValue(null);
+                return false;
+            }
         }
     }
 }

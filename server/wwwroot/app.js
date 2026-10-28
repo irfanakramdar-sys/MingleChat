@@ -19,6 +19,9 @@ const dialog = $("#newChatDialog");
 const identifierInput = $("#identifierInput");
 const dialogError = $("#dialogError");
 const toast = $("#toast");
+const MAX_IMAGE_SIZE = 10 * 1024 * 1024;
+const MAX_VIDEO_SIZE = 25 * 1024 * 1024;
+const MEDIA_BUCKET = "mingle-chat-media";
 
 let authMode = "login";
 let profile = null;
@@ -34,6 +37,7 @@ let lastChatRefreshError = null;
 let lastMessageLoadError = null;
 let archivedView = false;
 const unlockedPeerIds = new Set();
+const signedMediaUrls = new Map();
 
 function isPublicSupabaseKey(key) {
   if (key.startsWith("sb_publishable_")) return true;
@@ -97,8 +101,89 @@ function mapMessage(row) {
     createdAt: row.created_at,
     readAt: row.read_at,
     updatedAt: row.updated_at,
-    deletedAt: row.deleted_at
+    deletedAt: row.deleted_at,
+    attachmentPath: row.attachment_path,
+    attachmentName: row.attachment_name,
+    attachmentMime: row.attachment_mime,
+    attachmentSize: row.attachment_size
   };
+}
+
+function isAllowedMediaType(mimeType) {
+  return [
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "image/gif",
+    "video/mp4",
+    "video/webm",
+    "video/quicktime"
+  ].includes(mimeType);
+}
+
+function mediaExtension(mimeType) {
+  return {
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+    "image/gif": "gif",
+    "video/mp4": "mp4",
+    "video/webm": "webm",
+    "video/quicktime": "mov"
+  }[mimeType];
+}
+
+async function getSignedMediaUrl(path) {
+  const cached = signedMediaUrls.get(path);
+  if (cached && cached.expiresAt > Date.now()) return cached.url;
+
+  const { data, error } = await db().storage.from(MEDIA_BUCKET).createSignedUrl(path, 3600);
+  if (error) throw new Error(error.message);
+  if (!data?.signedUrl) throw new Error("The media link could not be created.");
+  signedMediaUrls.set(path, { url: data.signedUrl, expiresAt: Date.now() + 55 * 60 * 1000 });
+  return data.signedUrl;
+}
+
+async function appendMessageAttachment(message, bubble) {
+  if (!message.attachmentPath) return;
+  const peerId = message.senderId === profile.id ? message.recipientId : message.senderId;
+  if (!currentPeer || currentPeer.id !== peerId) return;
+
+  try {
+    const url = await getSignedMediaUrl(message.attachmentPath);
+    if (!currentPeer || currentPeer.id !== peerId) return;
+    if (message.attachmentMime.startsWith("image/")) {
+      const link = document.createElement("a");
+      link.href = url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.setAttribute("aria-label", `Open photo ${message.attachmentName}`);
+      const image = document.createElement("img");
+      image.className = "message-image";
+      image.src = url;
+      image.alt = message.attachmentName || "Shared photo";
+      image.loading = "lazy";
+      link.append(image);
+      bubble.prepend(link);
+      return;
+    }
+
+    const video = document.createElement("video");
+    video.className = "message-video";
+    video.src = url;
+    video.controls = true;
+    video.playsInline = true;
+    video.preload = "metadata";
+    video.setAttribute("aria-label", message.attachmentName || "Shared video");
+    bubble.prepend(video);
+  } catch (error) {
+    console.error("Could not load a chat attachment:", error);
+    const unavailable = document.createElement("div");
+    unavailable.className = "deleted-message";
+    unavailable.textContent = "This attachment could not be loaded.";
+    bubble.prepend(unavailable);
+    showToast(`Could not load attachment: ${error.message}`);
+  }
 }
 
 function loginEmail(phone) {
@@ -274,7 +359,7 @@ function startLiveConnection() {
           senderId: sender.id,
           senderName: sender.name,
           senderPhone: sender.phone,
-          preview: payload.new.text
+          preview: payload.new.text || (payload.new.attachment_mime?.startsWith("image/") ? "Photo" : "Video")
         });
       })().catch((error) => console.error("Could not process an incoming message:", error));
     })
@@ -730,7 +815,14 @@ async function openChat(identifier) {
         </button><div class="conversation-actions"><button id="archiveChatButton" class="chat-action-button" type="button">${currentPeerArchived ? "Unarchive" : "Archive"}</button><button id="lockChatButton" class="chat-action-button" type="button">${getLockedPeerIds().has(peer.id) ? "Unlock chat" : "Lock chat"}</button></div>
       </header>
       <div class="messages" id="messageList" role="log" aria-label="Messages with ${escapeText(peer.name)}"></div>
-      <form id="messageForm" class="composer"><textarea id="messageInput" maxlength="2000" rows="1" aria-label="Type a message" placeholder="Type a message..."></textarea><button class="send-button" type="submit" aria-label="Send message" title="Send message"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m21 3-7.3 18-3.8-7.9L2 9.3 21 3Z" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="m9.9 13.1 4.5-4.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></button></form>`;
+      <form id="messageForm" class="composer">
+        <label id="attachMediaButton" class="attach-button" for="attachmentInput" aria-label="Attach a photo or video" title="Attach a photo or video">+</label>
+        <input id="attachmentInput" class="attachment-input" type="file" accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm,video/quicktime">
+        <span id="attachmentPreview" class="attachment-preview" hidden></span>
+        <button id="removeAttachmentButton" class="remove-attachment-button" type="button" aria-label="Remove attachment" hidden>×</button>
+        <textarea id="messageInput" maxlength="2000" rows="1" aria-label="Type a message" placeholder="Type a message..."></textarea>
+        <button class="send-button" type="submit" aria-label="Send message" title="Send message"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m21 3-7.3 18-3.8-7.9L2 9.3 21 3Z" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="m9.9 13.1 4.5-4.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></button>
+      </form>`;
     $("#backButton").addEventListener("click", () => {
       clearInterval(messageTimer);
       currentPeer = null;
@@ -744,6 +836,30 @@ async function openChat(identifier) {
     $("#lockChatButton").addEventListener("click", () => void toggleChatLock(peer));
     $("#messageForm").addEventListener("submit", sendMessage);
     const messageInput = $("#messageInput");
+    const attachmentInput = $("#attachmentInput");
+    attachmentInput.addEventListener("change", () => {
+      const file = attachmentInput.files?.[0];
+      if (!file) return;
+      const isImage = file.type.startsWith("image/");
+      const maximumSize = isImage ? MAX_IMAGE_SIZE : MAX_VIDEO_SIZE;
+      if (!isAllowedMediaType(file.type) || file.size > maximumSize) {
+        attachmentInput.value = "";
+        showToast(isAllowedMediaType(file.type)
+          ? `${isImage ? "Photos" : "Videos"} must be ${isImage ? "10" : "25"} MB or smaller.`
+          : "Choose a JPG, PNG, WebP, GIF, MP4, WebM, or MOV file.");
+        return;
+      }
+      $("#attachmentPreview").textContent = `${isImage ? "Photo" : "Video"} selected`;
+      $("#attachmentPreview").title = file.name;
+      $("#attachmentPreview").hidden = false;
+      $("#removeAttachmentButton").hidden = false;
+      messageInput.focus();
+    });
+    $("#removeAttachmentButton").addEventListener("click", () => {
+      attachmentInput.value = "";
+      $("#attachmentPreview").hidden = true;
+      $("#removeAttachmentButton").hidden = true;
+    });
     messageInput.addEventListener("keydown", (keyEvent) => {
       if (keyEvent.key === "Enter" && !keyEvent.shiftKey && !keyEvent.isComposing) {
         keyEvent.preventDefault();
@@ -763,12 +879,12 @@ async function openChat(identifier) {
 }
 
 async function loadMessages() {
-  if (!currentPeer) return;
+  const peer = currentPeer;
+  if (!peer) return;
   try {
-    const peer = currentPeer;
     const { data, error } = await db()
       .from("messages")
-      .select("id,sender_id,recipient_id,text,created_at,read_at,updated_at,deleted_at")
+      .select("id,sender_id,recipient_id,text,created_at,read_at,updated_at,deleted_at,attachment_path,attachment_name,attachment_mime,attachment_size")
       .or(`and(sender_id.eq.${profile.id},recipient_id.eq.${peer.id}),and(sender_id.eq.${peer.id},recipient_id.eq.${profile.id})`)
       .order("created_at", { ascending: true })
       .limit(500);
@@ -782,7 +898,7 @@ async function loadMessages() {
       .eq("recipient_id", profile.id)
       .is("read_at", null);
     if (readError) throw new Error(readError.message);
-    if (!currentPeer) return;
+    if (!currentPeer || currentPeer.id !== peer.id) return;
     const messageList = $("#messageList");
     if (!messageList) return;
     const wasNearBottom = messageList.scrollHeight - messageList.scrollTop - messageList.clientHeight < 120;
@@ -796,14 +912,21 @@ async function loadMessages() {
     for (const message of messages) {
       const bubble = document.createElement("article");
       bubble.className = `message${message.senderId === profile.id ? " mine" : ""}`;
-      const text = document.createElement("div");
-      text.className = message.deletedAt ? "deleted-message" : "";
-      text.textContent = message.deletedAt ? "This message was deleted." : message.text;
+      if (message.text || message.deletedAt) {
+        const text = document.createElement("div");
+        text.className = message.deletedAt ? "deleted-message" : "";
+        text.textContent = message.deletedAt ? "This message was deleted." : message.text;
+        bubble.append(text);
+      }
+      if (message.attachmentPath && !message.deletedAt) {
+        await appendMessageAttachment(message, bubble);
+        if (!currentPeer || currentPeer.id !== peer.id) return;
+      }
       const time = document.createElement("div");
       time.className = "message-meta";
       const edited = message.updatedAt ? " · Edited" : "";
       time.textContent = `${timeLabel(message.createdAt)}${edited}${message.readAt ? " · Read" : ""}`;
-      bubble.append(text, time);
+      bubble.append(time);
       if (message.senderId === profile.id && !message.deletedAt) {
         const actions = document.createElement("div");
         actions.className = "message-actions";
@@ -855,6 +978,15 @@ async function deleteMessage(message) {
   try {
     const { error } = await db().rpc("delete_message", { p_message_id: message.id });
     if (error) throw new Error(error.message);
+    if (message.attachmentPath) {
+      signedMediaUrls.delete(message.attachmentPath);
+      const { error: storageError } = await db().storage.from(MEDIA_BUCKET).remove([message.attachmentPath]);
+      if (storageError) {
+        showToast(`Message deleted, but its stored attachment could not be removed: ${storageError.message}`);
+        await loadMessages();
+        return;
+      }
+    }
     await loadMessages();
   } catch (error) {
     showToast(`Could not delete message: ${error.message}`);
@@ -865,21 +997,58 @@ async function sendMessage(event) {
   event.preventDefault();
   const input = $("#messageInput");
   const text = input.value.trim();
-  if (!currentPeer || !text) return;
+  const attachmentInput = $("#attachmentInput");
+  const file = attachmentInput.files?.[0] || null;
+  if (!currentPeer || (!text && !file)) return;
+  const peer = currentPeer;
   const button = $("#messageForm button[type=submit]");
+  const attachmentPath = file
+    ? `${profile.id}/${peer.id}/${crypto.randomUUID()}.${mediaExtension(file.type)}`
+    : null;
+  let uploaded = false;
+  let sent = false;
   button.disabled = true;
   try {
+    if (file) {
+      if (!isAllowedMediaType(file.type)) throw new Error("Choose a supported photo or video file.");
+      const maximumSize = file.type.startsWith("image/") ? MAX_IMAGE_SIZE : MAX_VIDEO_SIZE;
+      if (file.size > maximumSize) {
+        throw new Error(`${file.type.startsWith("image/") ? "Photos" : "Videos"} must be ${file.type.startsWith("image/") ? "10" : "25"} MB or smaller.`);
+      }
+      const { error: uploadError } = await db().storage.from(MEDIA_BUCKET).upload(attachmentPath, file, {
+        contentType: file.type,
+        upsert: false
+      });
+      if (uploadError) throw new Error(`Could not upload attachment: ${uploadError.message}`);
+      uploaded = true;
+    }
+
     const { error } = await db().from("messages").insert({
       sender_id: profile.id,
-      recipient_id: currentPeer.id,
-      text
+      recipient_id: peer.id,
+      text: text || null,
+      attachment_path: attachmentPath,
+      attachment_name: file?.name || null,
+      attachment_mime: file?.type || null,
+      attachment_size: file?.size || null
     });
     if (error) throw new Error(error.message);
+    sent = true;
     input.value = "";
     input.style.height = "auto";
+    attachmentInput.value = "";
+    $("#attachmentPreview").hidden = true;
+    $("#removeAttachmentButton").hidden = true;
     input.focus();
     await Promise.all([loadMessages(), refreshChats()]);
   } catch (error) {
+    if (uploaded && !sent && attachmentPath) {
+      const { error: cleanupError } = await db().storage.from(MEDIA_BUCKET).remove([attachmentPath]);
+      if (cleanupError) {
+        showToast(`${error.message}. Uploaded media cleanup also failed: ${cleanupError.message}`);
+        return;
+      }
+    }
     showToast(error.message);
   } finally {
     if (button.isConnected) button.disabled = false;

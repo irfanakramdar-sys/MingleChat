@@ -23,16 +23,42 @@ create table if not exists public.messages (
   read_at timestamptz,
   updated_at timestamptz,
   deleted_at timestamptz,
+  attachment_path text,
+  attachment_name text,
+  attachment_mime text,
+  attachment_size bigint,
   constraint messages_no_self_chat check (sender_id <> recipient_id)
 );
 
 alter table public.messages add column if not exists updated_at timestamptz;
 alter table public.messages add column if not exists deleted_at timestamptz;
+alter table public.messages add column if not exists attachment_path text;
+alter table public.messages add column if not exists attachment_name text;
+alter table public.messages add column if not exists attachment_mime text;
+alter table public.messages add column if not exists attachment_size bigint;
 alter table public.messages alter column text drop not null;
 alter table public.messages drop constraint if exists messages_text_check;
 alter table public.messages
   add constraint messages_text_check
   check (text is null or char_length(btrim(text)) between 1 and 2000);
+alter table public.messages drop constraint if exists messages_content_check;
+alter table public.messages
+  add constraint messages_content_check
+  check (deleted_at is not null or nullif(btrim(text), '') is not null or attachment_path is not null);
+alter table public.messages drop constraint if exists messages_attachment_metadata_check;
+alter table public.messages
+  add constraint messages_attachment_metadata_check
+  check (
+    (attachment_path is null and attachment_name is null and attachment_mime is null and attachment_size is null)
+    or (
+      attachment_path is not null
+      and attachment_name is not null
+      and attachment_mime is not null
+      and attachment_mime in ('image/jpeg', 'image/png', 'image/webp', 'image/gif', 'video/mp4', 'video/webm', 'video/quicktime')
+      and attachment_size is not null
+      and attachment_size between 1 and 26214400
+    )
+  );
 
 create index if not exists messages_sender_created_idx
   on public.messages (sender_id, created_at desc);
@@ -54,6 +80,19 @@ create table if not exists public.chat_archives (
   primary key (user_id, peer_id),
   constraint chat_archives_no_self check (user_id <> peer_id)
 );
+
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values (
+  'mingle-chat-media',
+  'mingle-chat-media',
+  false,
+  26214400,
+  array['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'video/mp4', 'video/webm', 'video/quicktime']
+)
+on conflict (id) do update
+set public = excluded.public,
+    file_size_limit = excluded.file_size_limit,
+    allowed_mime_types = excluded.allowed_mime_types;
 
 create index if not exists profile_lookup_attempts_user_time_idx
   on public.profile_lookup_attempts (user_id, attempted_at);
@@ -108,6 +147,41 @@ grant select, insert on public.messages to authenticated;
 grant update (read_at) on public.messages to authenticated;
 grant select, insert, delete on public.chat_archives to authenticated;
 revoke all on public.profile_lookup_attempts from anon, authenticated;
+
+drop policy if exists "Mingle chat members can view message media" on storage.objects;
+create policy "Mingle chat members can view message media"
+  on storage.objects for select to authenticated
+  using (
+    bucket_id = 'mingle-chat-media'
+    and (
+      (storage.foldername(name))[1] = (select auth.uid())::text
+      or exists (
+        select 1
+        from public.messages as message
+        where message.attachment_path = name
+          and message.deleted_at is null
+          and (message.sender_id = (select auth.uid()) or message.recipient_id = (select auth.uid()))
+      )
+    )
+  );
+
+drop policy if exists "Users can upload their own chat media" on storage.objects;
+create policy "Users can upload their own chat media"
+  on storage.objects for insert to authenticated
+  with check (
+    bucket_id = 'mingle-chat-media'
+    and pg_catalog.array_length(storage.foldername(name), 1) = 2
+    and (storage.foldername(name))[1] = (select auth.uid())::text
+    and (storage.foldername(name))[2] <> (select auth.uid())::text
+  );
+
+drop policy if exists "Users can remove their own uploaded chat media" on storage.objects;
+create policy "Users can remove their own uploaded chat media"
+  on storage.objects for delete to authenticated
+  using (
+    bucket_id = 'mingle-chat-media'
+    and (storage.foldername(name))[1] = (select auth.uid())::text
+  );
 
 create or replace function public.handle_new_user()
 returns trigger
@@ -297,11 +371,13 @@ as $$
    and archive.peer_id = peers.peer_id
   left join lateral (
     select case
-      when m.deleted_at is not null then 'This message was deleted.'
-      else m.text
-    end as text,
-    m.sender_id,
-    m.created_at
+        when m.deleted_at is not null then 'This message was deleted.'
+        when m.attachment_path is not null and m.attachment_mime like 'image/%' then 'Photo'
+        when m.attachment_path is not null and m.attachment_mime like 'video/%' then 'Video'
+        else m.text
+      end as text,
+      m.sender_id,
+      m.created_at
     from public.messages as m
     where (m.sender_id = auth.uid() and m.recipient_id = peers.peer_id)
        or (m.sender_id = peers.peer_id and m.recipient_id = auth.uid())
@@ -359,7 +435,13 @@ begin
   end if;
 
   update public.messages
-  set text = null, deleted_at = pg_catalog.now(), updated_at = pg_catalog.now()
+  set text = null,
+      attachment_path = null,
+      attachment_name = null,
+      attachment_mime = null,
+      attachment_size = null,
+      deleted_at = pg_catalog.now(),
+      updated_at = pg_catalog.now()
   where id = p_message_id
     and sender_id = auth.uid()
     and deleted_at is null;
