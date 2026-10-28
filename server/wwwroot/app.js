@@ -126,6 +126,12 @@ function showAuthError(message) {
   authError.classList.remove("success");
   authError.classList.add("error");
   authError.hidden = false;
+  $("#existingAccountActions").hidden = true;
+}
+
+function showExistingAccountOptions(message) {
+  showAuthError(message);
+  $("#existingAccountActions").hidden = false;
 }
 
 function initials(name) {
@@ -166,6 +172,7 @@ function setAuthMode(mode) {
   phoneInput.value = "";
   passwordInput.value = "";
   authError.hidden = true;
+  $("#existingAccountActions").hidden = true;
 }
 
 function updateNav(activePage) {
@@ -569,7 +576,8 @@ async function handleAuthentication(event) {
       });
       if (error) throw new Error(error.message);
       if (!data.session) {
-        throw new Error("Account created, but Supabase is asking for email confirmation. The site owner must turn off email confirmations in Supabase Auth settings.");
+        showExistingAccountOptions("Account request submitted. If this is a new email, check your inbox to confirm it. If you already have an account, log in or send a password-reset link.");
+        return;
       }
       await showApp(await getMyProfile());
     } else {
@@ -583,11 +591,37 @@ async function handleAuthentication(event) {
       await showApp(await getMyProfile());
     }
   } catch (error) {
-    showAuthError(error.message);
+    const message = String(error?.message || error);
+    const errorCode = String(error?.code || "").toLowerCase();
+    const phoneAlreadyUsed = /profiles_phone_key|phone number.+(already|exists)|phone.+duplicate/i.test(message);
+    const emailAlreadyRegistered = /user already registered|email.+(already registered|already exists)|user_already_exists/i.test(`${message} ${errorCode}`);
+    if (authMode === "create" && phoneAlreadyUsed) {
+      showAuthError("This mobile number is already linked to a Mingle account. Use a different number, or log in with the email already linked to that account.");
+    } else if (authMode === "create" && emailAlreadyRegistered) {
+      showExistingAccountOptions("This email already has a Mingle account. Log in with its existing password, or send a password-reset link to that email.");
+    } else {
+      showAuthError(message);
+    }
   } finally {
     authSubmit.disabled = false;
     authSubmit.textContent = authMode === "create" ? "Create account" : "Log in";
   }
+}
+
+function logInToExistingAccount() {
+  const email = emailInput.value.trim().toLowerCase();
+  const password = passwordInput.value;
+  setAuthMode("login");
+  emailInput.value = email;
+  passwordInput.value = password;
+  passwordInput.focus();
+}
+
+async function resetExistingAccountPassword() {
+  const email = emailInput.value.trim().toLowerCase();
+  setAuthMode("login");
+  emailInput.value = email;
+  await sendPasswordReset();
 }
 
 async function sendPasswordReset() {
@@ -982,6 +1016,8 @@ async function initialize() {
   });
   emailInput.addEventListener("blur", () => { emailInput.value = emailInput.value.trim().toLowerCase(); });
   $("#forgotPasswordButton").addEventListener("click", () => void sendPasswordReset());
+  $("#existingAccountLogin").addEventListener("click", logInToExistingAccount);
+  $("#existingAccountReset").addEventListener("click", () => void resetExistingAccountPassword());
   emailInput.addEventListener("input", () => {
     $("#forgotPasswordButton").hidden = authMode === "create";
   });

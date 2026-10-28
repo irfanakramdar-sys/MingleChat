@@ -40,6 +40,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visib
 .primary:disabled { cursor: wait; opacity: .7; }
 .feedback { margin: 0; font-size: 12px; line-height: 1.55; }
 .feedback.error { color: #aa4842; }
+.account-actions { display: grid; gap: 7px; }
+.account-actions .secondary { width: 100%; }
+.account-actions .text-button { margin: 0; }
 .auth-note { margin: 18px 0 0; padding-top: 15px; border-top: 1px solid #edf0ed; color: #87918a; font-size: 11px; line-height: 1.7; }
 .app-shell { width: min(1180px, 100%); height: 100vh; height: 100dvh; min-height: 540px; margin: 0 auto; padding: 22px; }
 .messenger { height: 100%; display: grid; grid-template-columns: 340px minmax(0, 1fr); overflow: hidden; border: 1px solid var(--line); border-radius: 19px; background: #fff; box-shadow: 0 16px 55px #253c3010; }

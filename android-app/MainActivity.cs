@@ -20,6 +20,7 @@ namespace Mingle.Android;
 public sealed class MainActivity : Activity
 {
     private const string ServerPreference = "server_url";
+    private const string DefaultServerUrl = "https://irfanakramdar-sys.github.io/MingleChat/";
     private static readonly Color Ink = Color.Rgb(32, 46, 39);
     private static readonly Color Muted = Color.Rgb(104, 119, 110);
     private static readonly Color Green = Color.Rgb(22, 119, 88);
@@ -35,14 +36,7 @@ public sealed class MainActivity : Activity
         Window?.SetSoftInputMode(SoftInput.AdjustResize);
 
         var savedServer = GetPreferences(FileCreationMode.Private)?.GetString(ServerPreference, null);
-        if (string.IsNullOrWhiteSpace(savedServer))
-        {
-            ShowServerSetup(null);
-        }
-        else
-        {
-            OpenServer(savedServer);
-        }
+        OpenServer(string.IsNullOrWhiteSpace(savedServer) ? DefaultServerUrl : savedServer);
     }
 
     protected override void OnDestroy()

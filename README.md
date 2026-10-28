@@ -57,4 +57,4 @@ dotnet workload install android
 dotnet publish .\android-app\Mingle.Android.csproj -c Release -f net10.0-android -p:AndroidPackageFormat=apk
 ```
 
-The APK is written under `android-app\bin\Release\net10.0-android\publish`. Enter the GitHub Pages website address the first time you open it.
+The APK is written under `android-app\bin\Release\net10.0-android\publish`. The Mingle 1.1 APK opens the GitHub Pages website automatically; previously installed versions keep their saved website address.

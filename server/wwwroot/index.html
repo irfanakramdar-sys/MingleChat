@@ -43,6 +43,10 @@
           <input id="password" type="password" autocomplete="current-password" minlength="8" maxlength="72" placeholder="At least 8 characters" required>
         </div>
         <p id="authError" class="feedback error" role="alert" hidden></p>
+        <div id="existingAccountActions" class="account-actions" hidden>
+          <button id="existingAccountLogin" class="secondary" type="button">Log in to this account</button>
+          <button id="existingAccountReset" class="text-button" type="button">Forgot the password? Send a reset email</button>
+        </div>
         <button id="authSubmit" class="primary" type="submit">Log in</button>
         <button id="forgotPasswordButton" class="text-button" type="button">Forgot password?</button>
       </form>

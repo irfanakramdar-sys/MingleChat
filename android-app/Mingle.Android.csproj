@@ -6,8 +6,8 @@
     <RootNamespace>Mingle.Android</RootNamespace>
     <ApplicationTitle>Mingle Chat</ApplicationTitle>
     <ApplicationId>com.mingle.chat</ApplicationId>
-    <ApplicationVersion>1</ApplicationVersion>
-    <ApplicationDisplayVersion>1.0</ApplicationDisplayVersion>
+    <ApplicationVersion>2</ApplicationVersion>
+    <ApplicationDisplayVersion>1.1</ApplicationDisplayVersion>
     <SupportedOSPlatformVersion>23</SupportedOSPlatformVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
