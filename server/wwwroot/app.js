@@ -21,12 +21,15 @@ const dialogError = $("#dialogError");
 const toast = $("#toast");
 const MAX_IMAGE_SIZE = 10 * 1024 * 1024;
 const MAX_VIDEO_SIZE = 25 * 1024 * 1024;
+const MAX_VOICE_SIZE = 25 * 1024 * 1024;
 const MEDIA_BUCKET = "mingle-chat-media";
 
 let authMode = "login";
 let profile = null;
 let chats = [];
 let currentPeer = null;
+let currentGroup = null;
+let communities = [];
 let currentPeerArchived = false;
 let page = "chats";
 let refreshTimer = null;
@@ -36,6 +39,12 @@ let toastTimer = null;
 let lastChatRefreshError = null;
 let lastMessageLoadError = null;
 let archivedView = false;
+let mediaRecorder = null;
+let recordingStream = null;
+let recordingTimer = null;
+let recordingTarget = null;
+let recordedChunks = [];
+let recordingStarting = false;
 const unlockedPeerIds = new Set();
 const signedMediaUrls = new Map();
 
@@ -105,7 +114,9 @@ function mapMessage(row) {
     attachmentPath: row.attachment_path,
     attachmentName: row.attachment_name,
     attachmentMime: row.attachment_mime,
-    attachmentSize: row.attachment_size
+    attachmentSize: row.attachment_size,
+    groupId: row.group_id || null,
+    senderName: row.sender_name || null
   };
 }
 
@@ -117,7 +128,11 @@ function isAllowedMediaType(mimeType) {
     "image/gif",
     "video/mp4",
     "video/webm",
-    "video/quicktime"
+    "video/quicktime",
+    "audio/webm",
+    "audio/ogg",
+    "audio/mp4",
+    "audio/mpeg"
   ].includes(mimeType);
 }
 
@@ -129,8 +144,24 @@ function mediaExtension(mimeType) {
     "image/gif": "gif",
     "video/mp4": "mp4",
     "video/webm": "webm",
-    "video/quicktime": "mov"
+    "video/quicktime": "mov",
+    "audio/webm": "webm",
+    "audio/ogg": "ogg",
+    "audio/mp4": "m4a",
+    "audio/mpeg": "mp3"
   }[mimeType];
+}
+
+function isCurrentConversation(target) {
+  return target?.kind === "group"
+    ? currentGroup?.id === target.id
+    : currentPeer?.id === target?.id;
+}
+
+function currentConversationTarget() {
+  if (currentGroup) return { kind: "group", id: currentGroup.id, name: currentGroup.name };
+  if (currentPeer) return { kind: "direct", id: currentPeer.id, name: currentPeer.name };
+  return null;
 }
 
 async function getSignedMediaUrl(path) {
@@ -146,12 +177,14 @@ async function getSignedMediaUrl(path) {
 
 async function appendMessageAttachment(message, bubble) {
   if (!message.attachmentPath) return;
-  const peerId = message.senderId === profile.id ? message.recipientId : message.senderId;
-  if (!currentPeer || currentPeer.id !== peerId) return;
+  const target = message.groupId
+    ? { kind: "group", id: message.groupId }
+    : { kind: "direct", id: message.senderId === profile.id ? message.recipientId : message.senderId };
+  if (!isCurrentConversation(target)) return;
 
   try {
     const url = await getSignedMediaUrl(message.attachmentPath);
-    if (!currentPeer || currentPeer.id !== peerId) return;
+    if (!isCurrentConversation(target)) return;
     if (message.attachmentMime.startsWith("image/")) {
       const link = document.createElement("a");
       link.href = url;
@@ -168,14 +201,24 @@ async function appendMessageAttachment(message, bubble) {
       return;
     }
 
-    const video = document.createElement("video");
-    video.className = "message-video";
-    video.src = url;
-    video.controls = true;
-    video.playsInline = true;
-    video.preload = "metadata";
-    video.setAttribute("aria-label", message.attachmentName || "Shared video");
-    bubble.prepend(video);
+    if (message.attachmentMime.startsWith("audio/")) {
+      const audio = document.createElement("audio");
+      audio.className = "message-audio";
+      audio.src = url;
+      audio.controls = true;
+      audio.preload = "metadata";
+      audio.setAttribute("aria-label", message.attachmentName || "Voice message");
+      bubble.prepend(audio);
+    } else {
+      const video = document.createElement("video");
+      video.className = "message-video";
+      video.src = url;
+      video.controls = true;
+      video.playsInline = true;
+      video.preload = "metadata";
+      video.setAttribute("aria-label", message.attachmentName || "Shared video");
+      bubble.prepend(video);
+    }
   } catch (error) {
     console.error("Could not load a chat attachment:", error);
     const unavailable = document.createElement("div");
@@ -336,6 +379,13 @@ function notifyIncoming(event) {
   }
 }
 
+function messagePreview(message) {
+  if (message.attachment_mime?.startsWith("image/")) return "Photo";
+  if (message.attachment_mime?.startsWith("video/")) return "Video";
+  if (message.attachment_mime?.startsWith("audio/")) return "Voice message";
+  return message.text || "New message";
+}
+
 function startLiveConnection() {
   if (liveChannel) void db().removeChannel(liveChannel);
   liveChannel = db()
@@ -359,7 +409,7 @@ function startLiveConnection() {
           senderId: sender.id,
           senderName: sender.name,
           senderPhone: sender.phone,
-          preview: payload.new.text || (payload.new.attachment_mime?.startsWith("image/") ? "Photo" : "Video")
+          preview: messagePreview(payload.new)
         });
       })().catch((error) => console.error("Could not process an incoming message:", error));
     })
@@ -381,6 +431,24 @@ function startLiveConnection() {
       if (currentPeer?.id === payload.new.sender_id) void loadMessages();
       void refreshChats();
     })
+    .on("postgres_changes", {
+      event: "*",
+      schema: "public",
+      table: "group_messages"
+    }, (payload) => {
+      if (currentGroup?.id === (payload.new?.group_id || payload.old?.group_id)) void loadMessages();
+    })
+    .on("postgres_changes", {
+      event: "INSERT",
+      schema: "public",
+      table: "community_members",
+      filter: `user_id=eq.${profile.id}`
+    }, () => void refreshGroups())
+    .on("postgres_changes", {
+      event: "INSERT",
+      schema: "public",
+      table: "community_groups"
+    }, () => void refreshGroups())
     .subscribe((status, error) => {
       if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
         console.error("The live chat connection failed:", error?.message || status);
@@ -414,6 +482,10 @@ async function refreshChats() {
 }
 
 function renderChats() {
+  if (page === "groups") {
+    renderGroups();
+    return;
+  }
   chatList.replaceChildren();
   const search = $("#searchInput").value.trim().toLowerCase();
   let lockedPeers = new Set();
@@ -430,6 +502,9 @@ function renderChats() {
   $("#chatCount").textContent = String(visible.length);
   $("#listTitle").textContent = archivedView ? "Archived chats" : "Messages";
   $("#archiveViewButton").textContent = archivedView ? "Back to messages" : "Archived";
+  $("#archiveViewButton").hidden = page === "groups";
+  $("#newChatButton").title = page === "groups" ? "Create a community" : "Start a chat";
+  $("#newChatButton").setAttribute("aria-label", page === "groups" ? "Create a private community" : "Find someone by phone or email");
 
   for (const chat of visible) {
     const container = document.createElement("div");
@@ -467,6 +542,155 @@ function renderChats() {
       ? "No conversations match your search."
       : archivedView ? "No archived chats." : "No conversations yet. Select + to find someone by mobile number or email.";
     chatList.append(empty);
+  }
+}
+
+async function refreshGroups() {
+  if (!profile) return;
+  try {
+    const { data: memberships, error: membershipError } = await db()
+      .from("community_members")
+      .select("community_id,role")
+      .eq("user_id", profile.id);
+    if (membershipError) throw new Error(membershipError.message);
+
+    const communityIds = (memberships || []).map((membership) => membership.community_id);
+    if (!communityIds.length) {
+      communities = [];
+      if (page === "groups") renderGroups();
+      return;
+    }
+
+    const [{ data: communityRows, error: communityError }, { data: groupRows, error: groupError }] = await Promise.all([
+      db().from("communities").select("id,name,created_by,created_at").in("id", communityIds).order("created_at"),
+      db().from("community_groups").select("id,community_id,name,created_by,created_at").in("community_id", communityIds).order("created_at")
+    ]);
+    if (communityError) throw new Error(communityError.message);
+    if (groupError) throw new Error(groupError.message);
+
+    communities = (communityRows || []).map((community) => ({
+      ...community,
+      role: memberships.find((membership) => membership.community_id === community.id)?.role || "member",
+      groups: (groupRows || []).filter((group) => group.community_id === community.id)
+    }));
+    if (page === "groups") renderGroups();
+  } catch (error) {
+    console.error("Could not refresh communities:", error);
+    showToast(`Could not load communities: ${error.message}`);
+  }
+}
+
+function renderGroups() {
+  chatList.replaceChildren();
+  const search = $("#searchInput").value.trim().toLowerCase();
+  let visibleCount = 0;
+  $("#listTitle").textContent = "Groups & communities";
+  $("#archiveViewButton").hidden = true;
+  $("#chatCount").textContent = "";
+  $("#newChatButton").title = "Create a community";
+  $("#newChatButton").setAttribute("aria-label", "Create a private community");
+
+  for (const community of communities) {
+    const matchingGroups = community.groups.filter((group) =>
+      `${community.name} ${group.name}`.toLowerCase().includes(search));
+    if (!community.name.toLowerCase().includes(search) && !matchingGroups.length) continue;
+    visibleCount += 1;
+    const section = document.createElement("section");
+    section.className = "community-section";
+    const heading = document.createElement("div");
+    heading.className = "community-heading";
+    const title = document.createElement("strong");
+    title.textContent = community.name;
+    heading.append(title);
+    if (community.role === "owner" || community.role === "admin") {
+      const actions = document.createElement("div");
+      actions.className = "community-actions";
+      const inviteButton = document.createElement("button");
+      inviteButton.type = "button";
+      inviteButton.textContent = "Invite";
+      inviteButton.addEventListener("click", () => void inviteCommunityMember(community));
+      const groupButton = document.createElement("button");
+      groupButton.type = "button";
+      groupButton.textContent = "+ Group";
+      groupButton.addEventListener("click", () => void createCommunityGroup(community));
+      actions.append(inviteButton, groupButton);
+      heading.append(actions);
+    }
+    section.append(heading);
+
+    for (const group of matchingGroups) {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = `chat-row group-row${currentGroup?.id === group.id ? " selected" : ""}`;
+      row.innerHTML = `<span class="avatar">${escapeText(initials(group.name))}</span>
+        <span class="row-copy"><span class="row-name">${escapeText(group.name)}</span><span class="row-preview">Group · ${escapeText(community.name)}</span></span>`;
+      row.setAttribute("aria-label", `Open ${group.name} group in ${community.name}`);
+      row.addEventListener("click", () => void openGroup({ ...group, communityName: community.name }));
+      section.append(row);
+    }
+    if (!matchingGroups.length && !search) {
+      const empty = document.createElement("p");
+      empty.className = "empty-community";
+      empty.textContent = "No groups yet.";
+      section.append(empty);
+    }
+    chatList.append(section);
+  }
+
+  const empty = document.createElement("div");
+  empty.className = "empty-list";
+  if (!communities.length) {
+    empty.textContent = "Create a private community, then add groups and invite people by their Mingle phone number or email.";
+    chatList.append(empty);
+  } else if (!visibleCount) {
+    empty.textContent = "No groups or communities match your search.";
+    chatList.append(empty);
+  } else if (search) {
+    $("#chatCount").textContent = `${visibleCount} ${visibleCount === 1 ? "community" : "communities"}`;
+  }
+}
+
+async function createCommunity() {
+  const name = window.prompt("Choose a name for your private community.");
+  if (name === null) return;
+  try {
+    const { error } = await db().rpc("create_community", { p_name: name.trim() });
+    if (error) throw new Error(error.message);
+    await refreshGroups();
+    showToast(`Private community "${name.trim()}" created. Add a group and invite people.`);
+  } catch (error) {
+    showToast(`Could not create community: ${error.message}`);
+  }
+}
+
+async function createCommunityGroup(community) {
+  const name = window.prompt(`Choose a name for a group in "${community.name}".`);
+  if (name === null) return;
+  try {
+    const { error } = await db().rpc("create_community_group", {
+      p_community_id: community.id,
+      p_name: name.trim()
+    });
+    if (error) throw new Error(error.message);
+    await refreshGroups();
+  } catch (error) {
+    showToast(`Could not create group: ${error.message}`);
+  }
+}
+
+async function inviteCommunityMember(community) {
+  const identifier = window.prompt(`Enter the exact Mingle mobile number or email to invite to "${community.name}".`);
+  if (identifier === null) return;
+  try {
+    const { error } = await db().rpc("add_community_member", {
+      p_community_id: community.id,
+      p_identifier: identifier.trim().toLowerCase()
+    });
+    if (error) throw new Error(error.message);
+    await refreshGroups();
+    showToast("Member added to the private community and its groups.");
+  } catch (error) {
+    showToast(`Could not invite member: ${error.message}`);
   }
 }
 
@@ -598,14 +822,18 @@ async function setChatArchived(peerId, archived) {
 }
 
 function showLogin() {
+  if (mediaRecorder?.state === "recording") stopVoiceRecording(true);
   if (liveChannel) void db().removeChannel(liveChannel);
   liveChannel = null;
   clearInterval(refreshTimer);
   clearInterval(messageTimer);
   profile = null;
   currentPeer = null;
+  currentGroup = null;
+  communities = [];
   currentPeerArchived = false;
   archivedView = false;
+  page = "chats";
   chats = [];
   authScreen.hidden = false;
   appShell.hidden = true;
@@ -617,6 +845,9 @@ function showLogin() {
 
 async function showApp(userProfile) {
   profile = userProfile;
+  currentPeer = null;
+  currentGroup = null;
+  page = "chats";
   archivedView = false;
   authScreen.hidden = true;
   appShell.hidden = false;
@@ -625,9 +856,13 @@ async function showApp(userProfile) {
   $("#newChatButton").hidden = false;
   messenger.classList.remove("show-chat", "show-page");
   await refreshChats();
+  await refreshGroups();
   startLiveConnection();
   clearInterval(refreshTimer);
-  refreshTimer = setInterval(() => void refreshChats(), 30000);
+  refreshTimer = setInterval(() => {
+    void refreshChats();
+    void refreshGroups();
+  }, 30000);
 
   if ("serviceWorker" in navigator && window.isSecureContext) {
     try {
@@ -783,17 +1018,200 @@ async function changePassword() {
 }
 
 function renderWelcome() {
+  const isGroupsPage = page === "groups";
   contentPanel.innerHTML = `<div class="welcome"><div class="welcome-mark" aria-hidden="true">M</div>
-    <h2>Your conversations</h2>
-    <p>Choose a conversation or find someone using their registered mobile number or email address.</p></div>`;
+    <h2>${isGroupsPage ? "Private groups & communities" : "Your conversations"}</h2>
+    <p>${isGroupsPage ? "Create a community, add topic groups, and invite people by their registered Mingle number or email." : "Choose a conversation or find someone using their registered mobile number or email address."}</p></div>`;
+}
+
+function composerMarkup() {
+  return `<form id="messageForm" class="composer">
+      <button id="attachMediaButton" class="composer-icon attach-button" type="button" aria-label="Attach a photo or video" title="Attach a photo or video">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m8 12.5 6.7-6.7a3 3 0 0 1 4.2 4.2l-8.5 8.5a5 5 0 0 1-7.1-7.1l8.1-8.1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <input id="attachmentInput" class="attachment-input" type="file" accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm,video/quicktime">
+      <div class="emoji-control">
+        <button id="emojiButton" class="composer-icon" type="button" aria-label="Choose emoji" title="Choose emoji">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.8"/><path d="M8.5 14.2s1.2 2 3.5 2 3.5-2 3.5-2M9 9.5h.01M15 9.5h.01" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        </button>
+        <div id="emojiPicker" class="emoji-picker" role="group" aria-label="Emoji" hidden>${["😀", "😂", "🥰", "😍", "😊", "😉", "😭", "😎", "👍", "👏", "🙏", "❤️", "🔥", "🎉", "💯", "🤔"].map((emoji) => `<button type="button" aria-label="${emoji}">${emoji}</button>`).join("")}</div>
+      </div>
+      <span id="attachmentPreview" class="attachment-preview" hidden></span>
+      <button id="removeAttachmentButton" class="remove-attachment-button" type="button" aria-label="Remove attachment" hidden>×</button>
+      <textarea id="messageInput" maxlength="2000" rows="1" aria-label="Type a message" placeholder="Type a message..."></textarea>
+      <button id="voiceMessageButton" class="composer-icon voice-button" type="button" aria-label="Record a voice message" title="Record a voice message">
+        <svg class="microphone-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3" stroke="currentColor" stroke-width="1.8"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3m-3 0h6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        <svg class="stop-recording-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>
+      </button>
+      <button class="send-button" type="submit" aria-label="Send message" title="Send message"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m21 3-7.3 18-3.8-7.9L2 9.3 21 3Z" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="m9.9 13.1 4.5-4.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></button>
+    </form>`;
+}
+
+function updateComposerControls() {
+  const input = $("#messageInput");
+  const file = $("#attachmentInput")?.files?.[0];
+  const hasContent = Boolean(input?.value.trim() || file);
+  const recording = mediaRecorder?.state === "recording";
+  const sendButton = $("#messageForm button[type=submit]");
+  const voiceButton = $("#voiceMessageButton");
+  if (!sendButton || !voiceButton) return;
+  sendButton.hidden = !hasContent || recording;
+  voiceButton.hidden = hasContent && !recording;
+  voiceButton.classList.toggle("recording", recording);
+  voiceButton.setAttribute("aria-label", recording ? "Stop and send voice message" : "Record a voice message");
+  voiceButton.title = recording ? "Stop and send voice message" : "Record a voice message";
+}
+
+function insertEmoji(emoji) {
+  const input = $("#messageInput");
+  const start = input.selectionStart;
+  const end = input.selectionEnd;
+  input.setRangeText(emoji, start, end, "end");
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.focus();
+  $("#emojiPicker").hidden = true;
+}
+
+function bindComposer() {
+  const messageInput = $("#messageInput");
+  const attachmentInput = $("#attachmentInput");
+  $("#messageForm").addEventListener("submit", sendMessage);
+  $("#attachMediaButton").addEventListener("click", () => attachmentInput.click());
+  attachmentInput.addEventListener("change", () => {
+    const file = attachmentInput.files?.[0];
+    if (!file) return;
+    const isImage = file.type.startsWith("image/");
+    const maximumSize = isImage ? MAX_IMAGE_SIZE : MAX_VIDEO_SIZE;
+    if (!isAllowedMediaType(file.type) || file.type.startsWith("audio/") || file.size > maximumSize) {
+      attachmentInput.value = "";
+      showToast(isAllowedMediaType(file.type) && !file.type.startsWith("audio/")
+        ? `${isImage ? "Photos" : "Videos"} must be ${isImage ? "10" : "25"} MB or smaller.`
+        : "Choose a JPG, PNG, WebP, GIF, MP4, WebM, or MOV file.");
+      updateComposerControls();
+      return;
+    }
+    $("#attachmentPreview").textContent = `${isImage ? "Photo" : "Video"} selected`;
+    $("#attachmentPreview").title = file.name;
+    $("#attachmentPreview").hidden = false;
+    $("#removeAttachmentButton").hidden = false;
+    updateComposerControls();
+    messageInput.focus();
+  });
+  $("#removeAttachmentButton").addEventListener("click", () => {
+    attachmentInput.value = "";
+    $("#attachmentPreview").hidden = true;
+    $("#removeAttachmentButton").hidden = true;
+    updateComposerControls();
+  });
+  messageInput.addEventListener("keydown", (keyEvent) => {
+    if (keyEvent.key === "Enter" && !keyEvent.shiftKey && !keyEvent.isComposing) {
+      keyEvent.preventDefault();
+      messageInput.form.requestSubmit();
+    }
+  });
+  messageInput.addEventListener("input", () => {
+    messageInput.style.height = "auto";
+    messageInput.style.height = `${Math.min(messageInput.scrollHeight, 72)}px`;
+    updateComposerControls();
+  });
+  $("#emojiButton").addEventListener("click", () => {
+    $("#emojiPicker").hidden = !$("#emojiPicker").hidden;
+  });
+  $("#emojiPicker").addEventListener("click", (event) => {
+    const button = event.target.closest("button");
+    if (button) insertEmoji(button.textContent);
+  });
+  $("#voiceMessageButton").addEventListener("click", () => {
+    if (mediaRecorder?.state === "recording") stopVoiceRecording(false);
+    else void startVoiceRecording();
+  });
+  updateComposerControls();
+}
+
+async function startVoiceRecording() {
+  if (recordingStarting) return;
+  if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+    showToast("Voice recording needs a secure HTTPS site and a browser that supports microphone recording.");
+    return;
+  }
+  const target = currentConversationTarget();
+  if (!target) return;
+
+  recordingStarting = true;
+  try {
+    recordingStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    recordingStarting = false;
+    if (!isCurrentConversation(target)) {
+      recordingStream.getTracks().forEach((track) => track.stop());
+      recordingStream = null;
+      return;
+    }
+    recordingTarget = target;
+    recordedChunks = [];
+    const supportedTypes = ["audio/webm;codecs=opus", "audio/ogg;codecs=opus", "audio/mp4"];
+    const mimeType = supportedTypes.find((type) => MediaRecorder.isTypeSupported(type));
+    mediaRecorder = mimeType ? new MediaRecorder(recordingStream, { mimeType }) : new MediaRecorder(recordingStream);
+    mediaRecorder.addEventListener("dataavailable", (event) => {
+      if (event.data.size) recordedChunks.push(event.data);
+    });
+    mediaRecorder.addEventListener("error", (event) => {
+      showToast(`Could not record voice message: ${event.error?.message || "microphone recording failed."}`);
+    });
+    mediaRecorder.addEventListener("stop", () => {
+      const activeRecorder = mediaRecorder;
+      const target = recordingTarget;
+      const chunks = recordedChunks;
+      const type = activeRecorder?.mimeType.split(";")[0] || chunks[0]?.type.split(";")[0] || "";
+      mediaRecorder = null;
+      recordingTarget = null;
+      recordedChunks = [];
+      clearTimeout(recordingTimer);
+      recordingStream?.getTracks().forEach((track) => track.stop());
+      recordingStream = null;
+      updateComposerControls();
+
+      const blob = new Blob(chunks, { type });
+      if (!blob.size) {
+        showToast("No voice audio was recorded. Please try again.");
+      } else if (blob.size > MAX_VOICE_SIZE) {
+        showToast("Voice messages must be 25 MB or smaller.");
+      } else if (!isAllowedMediaType(type)) {
+        showToast("This browser recorded an unsupported audio format. Try another browser.");
+      } else if (target && isCurrentConversation(target)) {
+        const voiceFile = new File([blob], `voice-${Date.now()}.${mediaExtension(type)}`, { type });
+        void sendPreparedMessage(voiceFile, target);
+      } else if (target) {
+        showToast("Voice message was not sent because you left that conversation.");
+      }
+    }, { once: true });
+    mediaRecorder.start();
+    updateComposerControls();
+    recordingTimer = setTimeout(() => stopVoiceRecording(false), 120000);
+  } catch (error) {
+    recordingStarting = false;
+    recordingStream?.getTracks().forEach((track) => track.stop());
+    recordingStream = null;
+    mediaRecorder = null;
+    updateComposerControls();
+    showToast(`Could not start voice recording: ${error.message}`);
+  }
+}
+
+function stopVoiceRecording(cancel) {
+  if (!mediaRecorder || mediaRecorder.state === "inactive") return;
+  if (cancel) recordingTarget = null;
+  clearTimeout(recordingTimer);
+  mediaRecorder.stop();
 }
 
 async function openChat(identifier) {
   if (messageTimer) clearInterval(messageTimer);
+  if (mediaRecorder?.state === "recording") stopVoiceRecording(true);
   try {
     const peer = await findProfile(identifier);
     if (!await unlockChat(peer.id)) return;
     currentPeer = peer;
+    currentGroup = null;
     page = "chats";
     updateNav("chats");
     const { data: archive, error: archiveError } = await db()
@@ -815,17 +1233,11 @@ async function openChat(identifier) {
         </button><div class="conversation-actions"><button id="archiveChatButton" class="chat-action-button" type="button">${currentPeerArchived ? "Unarchive" : "Archive"}</button><button id="lockChatButton" class="chat-action-button" type="button">${getLockedPeerIds().has(peer.id) ? "Unlock chat" : "Lock chat"}</button></div>
       </header>
       <div class="messages" id="messageList" role="log" aria-label="Messages with ${escapeText(peer.name)}"></div>
-      <form id="messageForm" class="composer">
-        <label id="attachMediaButton" class="attach-button" for="attachmentInput" aria-label="Attach a photo or video" title="Attach a photo or video">+</label>
-        <input id="attachmentInput" class="attachment-input" type="file" accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm,video/quicktime">
-        <span id="attachmentPreview" class="attachment-preview" hidden></span>
-        <button id="removeAttachmentButton" class="remove-attachment-button" type="button" aria-label="Remove attachment" hidden>×</button>
-        <textarea id="messageInput" maxlength="2000" rows="1" aria-label="Type a message" placeholder="Type a message..."></textarea>
-        <button class="send-button" type="submit" aria-label="Send message" title="Send message"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m21 3-7.3 18-3.8-7.9L2 9.3 21 3Z" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="m9.9 13.1 4.5-4.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></button>
-      </form>`;
+      ${composerMarkup()}`;
     $("#backButton").addEventListener("click", () => {
       clearInterval(messageTimer);
       currentPeer = null;
+      currentGroup = null;
       currentPeerArchived = false;
       messenger.classList.remove("show-chat");
       void refreshChats();
@@ -834,42 +1246,8 @@ async function openChat(identifier) {
     $("#peerProfileButton").addEventListener("click", () => renderProfile(peer));
     $("#archiveChatButton").addEventListener("click", () => void setChatArchived(peer.id, !currentPeerArchived));
     $("#lockChatButton").addEventListener("click", () => void toggleChatLock(peer));
-    $("#messageForm").addEventListener("submit", sendMessage);
     const messageInput = $("#messageInput");
-    const attachmentInput = $("#attachmentInput");
-    attachmentInput.addEventListener("change", () => {
-      const file = attachmentInput.files?.[0];
-      if (!file) return;
-      const isImage = file.type.startsWith("image/");
-      const maximumSize = isImage ? MAX_IMAGE_SIZE : MAX_VIDEO_SIZE;
-      if (!isAllowedMediaType(file.type) || file.size > maximumSize) {
-        attachmentInput.value = "";
-        showToast(isAllowedMediaType(file.type)
-          ? `${isImage ? "Photos" : "Videos"} must be ${isImage ? "10" : "25"} MB or smaller.`
-          : "Choose a JPG, PNG, WebP, GIF, MP4, WebM, or MOV file.");
-        return;
-      }
-      $("#attachmentPreview").textContent = `${isImage ? "Photo" : "Video"} selected`;
-      $("#attachmentPreview").title = file.name;
-      $("#attachmentPreview").hidden = false;
-      $("#removeAttachmentButton").hidden = false;
-      messageInput.focus();
-    });
-    $("#removeAttachmentButton").addEventListener("click", () => {
-      attachmentInput.value = "";
-      $("#attachmentPreview").hidden = true;
-      $("#removeAttachmentButton").hidden = true;
-    });
-    messageInput.addEventListener("keydown", (keyEvent) => {
-      if (keyEvent.key === "Enter" && !keyEvent.shiftKey && !keyEvent.isComposing) {
-        keyEvent.preventDefault();
-        messageInput.form.requestSubmit();
-      }
-    });
-    messageInput.addEventListener("input", () => {
-      messageInput.style.height = "auto";
-      messageInput.style.height = `${Math.min(messageInput.scrollHeight, 112)}px`;
-    });
+    bindComposer();
     await loadMessages();
     messageTimer = setInterval(() => void loadMessages(), 15000);
     messageInput.focus();
@@ -878,27 +1256,69 @@ async function openChat(identifier) {
   }
 }
 
+async function openGroup(group) {
+  if (messageTimer) clearInterval(messageTimer);
+  if (mediaRecorder?.state === "recording") stopVoiceRecording(true);
+  currentPeer = null;
+  currentGroup = group;
+  page = "groups";
+  updateNav("groups");
+  messenger.classList.remove("show-page");
+  messenger.classList.add("show-chat");
+  contentPanel.innerHTML = `<header class="conversation-header">
+      <button id="backButton" class="icon-button back-button" type="button" aria-label="Back to groups"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m14.5 5-7 7 7 7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      <span class="avatar">${escapeText(initials(group.name))}</span>
+      <span class="person"><span><span class="person-name">${escapeText(group.name)}</span><span class="person-summary">${escapeText(group.communityName)} · Private group</span></span></span>
+    </header>
+    <div class="messages" id="messageList" role="log" aria-label="Messages in ${escapeText(group.name)}"></div>
+    ${composerMarkup()}`;
+  $("#backButton").addEventListener("click", () => {
+    if (mediaRecorder?.state === "recording") stopVoiceRecording(true);
+    clearInterval(messageTimer);
+    currentGroup = null;
+    messenger.classList.remove("show-chat");
+    renderWelcome();
+    void refreshGroups();
+  });
+  bindComposer();
+  await loadMessages();
+  messageTimer = setInterval(() => void loadMessages(), 15000);
+  $("#messageInput").focus();
+}
+
 async function loadMessages() {
   const peer = currentPeer;
-  if (!peer) return;
+  const group = currentGroup;
+  if (!peer && !group) return;
+  const target = group
+    ? { kind: "group", id: group.id }
+    : { kind: "direct", id: peer.id };
   try {
-    const { data, error } = await db()
-      .from("messages")
-      .select("id,sender_id,recipient_id,text,created_at,read_at,updated_at,deleted_at,attachment_path,attachment_name,attachment_mime,attachment_size")
-      .or(`and(sender_id.eq.${profile.id},recipient_id.eq.${peer.id}),and(sender_id.eq.${peer.id},recipient_id.eq.${profile.id})`)
-      .order("created_at", { ascending: true })
-      .limit(500);
+    let data;
+    let error;
+    if (group) {
+      ({ data, error } = await db().rpc("get_group_messages", { p_group_id: group.id }));
+    } else {
+      ({ data, error } = await db()
+        .from("messages")
+        .select("id,sender_id,recipient_id,text,created_at,read_at,updated_at,deleted_at,attachment_path,attachment_name,attachment_mime,attachment_size")
+        .or(`and(sender_id.eq.${profile.id},recipient_id.eq.${peer.id}),and(sender_id.eq.${peer.id},recipient_id.eq.${profile.id})`)
+        .order("created_at", { ascending: true })
+        .limit(500));
+    }
     if (error) throw new Error(error.message);
     const messages = (data || []).map(mapMessage);
-    if (!currentPeer || currentPeer.id !== peer.id) return;
-    const { error: readError } = await db()
-      .from("messages")
-      .update({ read_at: new Date().toISOString() })
-      .eq("sender_id", peer.id)
-      .eq("recipient_id", profile.id)
-      .is("read_at", null);
-    if (readError) throw new Error(readError.message);
-    if (!currentPeer || currentPeer.id !== peer.id) return;
+    if (!isCurrentConversation(target)) return;
+    if (peer) {
+      const { error: readError } = await db()
+        .from("messages")
+        .update({ read_at: new Date().toISOString() })
+        .eq("sender_id", peer.id)
+        .eq("recipient_id", profile.id)
+        .is("read_at", null);
+      if (readError) throw new Error(readError.message);
+      if (!isCurrentConversation(target)) return;
+    }
     const messageList = $("#messageList");
     if (!messageList) return;
     const wasNearBottom = messageList.scrollHeight - messageList.scrollTop - messageList.clientHeight < 120;
@@ -906,12 +1326,20 @@ async function loadMessages() {
     if (!messages.length) {
       const empty = document.createElement("div");
       empty.className = "empty-list";
-      empty.textContent = `You are now connected with ${currentPeer.name}. Send a message to say hello.`;
+      empty.textContent = group
+        ? `This is the start of ${group.name}. Send a message to the community group.`
+        : `You are now connected with ${peer.name}. Send a message to say hello.`;
       messageList.append(empty);
     }
     for (const message of messages) {
       const bubble = document.createElement("article");
       bubble.className = `message${message.senderId === profile.id ? " mine" : ""}`;
+      if (group && message.senderId !== profile.id && message.senderName) {
+        const senderName = document.createElement("div");
+        senderName.className = "group-sender-name";
+        senderName.textContent = message.senderName;
+        bubble.append(senderName);
+      }
       if (message.text || message.deletedAt) {
         const text = document.createElement("div");
         text.className = message.deletedAt ? "deleted-message" : "";
@@ -920,7 +1348,7 @@ async function loadMessages() {
       }
       if (message.attachmentPath && !message.deletedAt) {
         await appendMessageAttachment(message, bubble);
-        if (!currentPeer || currentPeer.id !== peer.id) return;
+        if (!isCurrentConversation(target)) return;
       }
       const time = document.createElement("div");
       time.className = "message-meta";
@@ -930,7 +1358,7 @@ async function loadMessages() {
       if (message.senderId === profile.id && !message.deletedAt) {
         const actions = document.createElement("div");
         actions.className = "message-actions";
-        if (Date.now() - new Date(message.createdAt).getTime() <= 15 * 60 * 1000) {
+        if (message.text && Date.now() - new Date(message.createdAt).getTime() <= 15 * 60 * 1000) {
           const editButton = document.createElement("button");
           editButton.type = "button";
           editButton.textContent = "Edit";
@@ -948,7 +1376,7 @@ async function loadMessages() {
     }
     if (wasNearBottom || messages.length <= 1) messageList.scrollTop = messageList.scrollHeight;
     lastMessageLoadError = null;
-    void refreshChats();
+    if (peer) void refreshChats();
   } catch (error) {
     console.error("Could not load messages:", error);
     if (lastMessageLoadError !== error.message) showToast(`Could not load messages: ${error.message}`);
@@ -961,7 +1389,7 @@ async function editMessage(message) {
   if (updatedText === null || !updatedText.trim()) return;
 
   try {
-    const { error } = await db().rpc("edit_message", {
+    const { error } = await db().rpc(message.groupId ? "edit_group_message" : "edit_message", {
       p_message_id: message.id,
       p_text: updatedText.trim()
     });
@@ -976,7 +1404,7 @@ async function deleteMessage(message) {
   if (!window.confirm("Delete this message for everyone in the chat?")) return;
 
   try {
-    const { error } = await db().rpc("delete_message", { p_message_id: message.id });
+    const { error } = await db().rpc(message.groupId ? "delete_group_message" : "delete_message", { p_message_id: message.id });
     if (error) throw new Error(error.message);
     if (message.attachmentPath) {
       signedMediaUrls.delete(message.attachmentPath);
@@ -995,25 +1423,28 @@ async function deleteMessage(message) {
 
 async function sendMessage(event) {
   event.preventDefault();
+  await sendPreparedMessage($("#attachmentInput").files?.[0] || null, currentConversationTarget());
+}
+
+async function sendPreparedMessage(file, target) {
   const input = $("#messageInput");
-  const text = input.value.trim();
-  const attachmentInput = $("#attachmentInput");
-  const file = attachmentInput.files?.[0] || null;
-  if (!currentPeer || (!text && !file)) return;
-  const peer = currentPeer;
+  const text = input?.value.trim() || "";
+  if (!target || (!text && !file)) return;
   const button = $("#messageForm button[type=submit]");
   const attachmentPath = file
-    ? `${profile.id}/${peer.id}/${crypto.randomUUID()}.${mediaExtension(file.type)}`
+    ? `${profile.id}/${target.id}/${crypto.randomUUID()}.${mediaExtension(file.type)}`
     : null;
   let uploaded = false;
   let sent = false;
-  button.disabled = true;
+  if (button) button.disabled = true;
   try {
     if (file) {
       if (!isAllowedMediaType(file.type)) throw new Error("Choose a supported photo or video file.");
-      const maximumSize = file.type.startsWith("image/") ? MAX_IMAGE_SIZE : MAX_VIDEO_SIZE;
+      const maximumSize = file.type.startsWith("image/") ? MAX_IMAGE_SIZE : file.type.startsWith("audio/") ? MAX_VOICE_SIZE : MAX_VIDEO_SIZE;
       if (file.size > maximumSize) {
-        throw new Error(`${file.type.startsWith("image/") ? "Photos" : "Videos"} must be ${file.type.startsWith("image/") ? "10" : "25"} MB or smaller.`);
+        throw new Error(file.type.startsWith("image/")
+          ? "Photos must be 10 MB or smaller."
+          : file.type.startsWith("audio/") ? "Voice messages must be 25 MB or smaller." : "Videos must be 25 MB or smaller.");
       }
       const { error: uploadError } = await db().storage.from(MEDIA_BUCKET).upload(attachmentPath, file, {
         contentType: file.type,
@@ -1023,24 +1454,30 @@ async function sendMessage(event) {
       uploaded = true;
     }
 
-    const { error } = await db().from("messages").insert({
+    const payload = {
       sender_id: profile.id,
-      recipient_id: peer.id,
       text: text || null,
       attachment_path: attachmentPath,
       attachment_name: file?.name || null,
       attachment_mime: file?.type || null,
       attachment_size: file?.size || null
-    });
+    };
+    const { error } = target.kind === "group"
+      ? await db().from("group_messages").insert({ ...payload, group_id: target.id })
+      : await db().from("messages").insert({ ...payload, recipient_id: target.id });
     if (error) throw new Error(error.message);
     sent = true;
-    input.value = "";
-    input.style.height = "auto";
-    attachmentInput.value = "";
-    $("#attachmentPreview").hidden = true;
-    $("#removeAttachmentButton").hidden = true;
-    input.focus();
-    await Promise.all([loadMessages(), refreshChats()]);
+    if (input) {
+      input.value = "";
+      input.style.height = "auto";
+    }
+    const attachmentInput = $("#attachmentInput");
+    if (attachmentInput) attachmentInput.value = "";
+    if ($("#attachmentPreview")) $("#attachmentPreview").hidden = true;
+    if ($("#removeAttachmentButton")) $("#removeAttachmentButton").hidden = true;
+    updateComposerControls();
+    input?.focus();
+    await Promise.all([loadMessages(), target.kind === "group" ? refreshGroups() : refreshChats()]);
   } catch (error) {
     if (uploaded && !sent && attachmentPath) {
       const { error: cleanupError } = await db().storage.from(MEDIA_BUCKET).remove([attachmentPath]);
@@ -1051,7 +1488,7 @@ async function sendMessage(event) {
     }
     showToast(error.message);
   } finally {
-    if (button.isConnected) button.disabled = false;
+    if (button?.isConnected) button.disabled = false;
   }
 }
 
@@ -1062,6 +1499,9 @@ function renderProfile(person = profile) {
   else page = "contact-profile";
   updateNav(person.id === profile.id ? "profile" : "chats");
   if (person.id === profile.id) {
+    if (mediaRecorder?.state === "recording") stopVoiceRecording(true);
+    currentPeer = null;
+    currentGroup = null;
     messenger.classList.remove("show-chat");
     messenger.classList.add("show-page");
     $("#listTitle").textContent = "Your profile";
@@ -1138,8 +1578,13 @@ async function addLoginEmail() {
 }
 
 function openChatsPage() {
+  if (mediaRecorder?.state === "recording") stopVoiceRecording(true);
   page = "chats";
   archivedView = false;
+  currentPeer = null;
+  currentGroup = null;
+  currentPeerArchived = false;
+  clearInterval(messageTimer);
   messenger.classList.remove("show-chat", "show-page");
   $("#listTitle").textContent = "Messages";
   $("#searchInput").parentElement.hidden = false;
@@ -1147,6 +1592,24 @@ function openChatsPage() {
   updateNav("chats");
   void refreshChats();
   renderWelcome();
+}
+
+function openGroupsPage() {
+  if (mediaRecorder?.state === "recording") stopVoiceRecording(true);
+  page = "groups";
+  archivedView = false;
+  currentPeer = null;
+  currentGroup = null;
+  currentPeerArchived = false;
+  clearInterval(messageTimer);
+  messenger.classList.remove("show-chat", "show-page");
+  $("#listTitle").textContent = "Groups & communities";
+  $("#searchInput").parentElement.hidden = false;
+  $("#archiveViewButton").hidden = true;
+  $("#newChatButton").hidden = false;
+  updateNav("groups");
+  renderWelcome();
+  void refreshGroups();
 }
 
 async function findContact(event) {
@@ -1220,13 +1683,19 @@ async function initialize() {
   $("#archiveViewButton").addEventListener("click", () => {
     archivedView = !archivedView;
     currentPeer = null;
+    currentGroup = null;
     currentPeerArchived = false;
+    page = "chats";
     clearInterval(messageTimer);
     messenger.classList.remove("show-chat", "show-page");
     renderWelcome();
     void refreshChats();
   });
   $("#newChatButton").addEventListener("click", () => {
+    if (page === "groups") {
+      void createCommunity();
+      return;
+    }
     dialogError.hidden = true;
     dialog.showModal();
     identifierInput.focus();
@@ -1236,6 +1705,7 @@ async function initialize() {
   document.querySelectorAll(".nav-button").forEach((button) => {
     button.addEventListener("click", () => {
       if (button.dataset.page === "profile") renderProfile(profile);
+      else if (button.dataset.page === "groups") openGroupsPage();
       else openChatsPage();
     });
   });

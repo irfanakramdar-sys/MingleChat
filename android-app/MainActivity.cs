@@ -22,6 +22,7 @@ public sealed class MainActivity : Activity
     private const string ServerPreference = "server_url";
     private const string DefaultServerUrl = "https://irfanakramdar-sys.github.io/MingleChat/";
     private const int MediaPickerRequestCode = 4107;
+    private const int AudioPermissionRequestCode = 4108;
     private static readonly Color Ink = Color.Rgb(32, 46, 39);
     private static readonly Color Muted = Color.Rgb(104, 119, 110);
     private static readonly Color Green = Color.Rgb(22, 119, 88);
@@ -29,6 +30,7 @@ public sealed class MainActivity : Activity
     private EditText? _serverInput;
     private WebView? _webView;
     private IValueCallback? _mediaPickerCallback;
+    private PermissionRequest? _audioPermissionRequest;
 
     protected override void OnCreate(Bundle? savedInstanceState)
     {
@@ -45,9 +47,36 @@ public sealed class MainActivity : Activity
     {
         _mediaPickerCallback?.OnReceiveValue(null);
         _mediaPickerCallback = null;
+        _audioPermissionRequest?.Deny();
+        _audioPermissionRequest = null;
         _webView?.Destroy();
         _webView = null;
         base.OnDestroy();
+    }
+
+    public override void OnRequestPermissionsResult(int requestCode, string[] permissions, Permission[] grantResults)
+    {
+        base.OnRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode != AudioPermissionRequestCode)
+        {
+            return;
+        }
+
+        var request = _audioPermissionRequest;
+        _audioPermissionRequest = null;
+        if (request is null)
+        {
+            return;
+        }
+
+        if (grantResults.Length > 0 && grantResults[0] == Permission.Granted)
+        {
+            request.Grant(new[] { PermissionRequest.ResourceAudioCapture });
+        }
+        else
+        {
+            request.Deny();
+        }
     }
 
     protected override void OnActivityResult(int requestCode, Result resultCode, Intent? data)
@@ -192,7 +221,7 @@ public sealed class MainActivity : Activity
         _webView.Settings.JavaScriptCanOpenWindowsAutomatically = false;
         _webView.Settings.MixedContentMode = MixedContentHandling.NeverAllow;
         _webView.SetWebViewClient(new MingleWebViewClient(new Uri(serverUrl).Authority));
-        _webView.SetWebChromeClient(new MingleWebChromeClient(this));
+        _webView.SetWebChromeClient(new MingleWebChromeClient(this, new Uri(serverUrl).Authority));
         _root.AddView(_webView, new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MatchParent,
             0,
@@ -220,8 +249,40 @@ public sealed class MainActivity : Activity
         }
     }
 
-    private sealed class MingleWebChromeClient(MainActivity activity) : WebChromeClient
+    private sealed class MingleWebChromeClient(MainActivity activity, string serverAuthority) : WebChromeClient
     {
+        public override void OnPermissionRequest(PermissionRequest? request)
+        {
+            if (request is null)
+            {
+                return;
+            }
+
+            activity.RunOnUiThread(() =>
+            {
+                var resources = request.GetResources();
+                if (resources is null
+                    || !resources.Contains(PermissionRequest.ResourceAudioCapture)
+                    || !string.Equals(request.Origin?.Authority, serverAuthority, StringComparison.OrdinalIgnoreCase))
+                {
+                    request.Deny();
+                    return;
+                }
+
+                if (activity.CheckSelfPermission(global::Android.Manifest.Permission.RecordAudio) == Permission.Granted)
+                {
+                    request.Grant(new[] { PermissionRequest.ResourceAudioCapture });
+                    return;
+                }
+
+                activity._audioPermissionRequest?.Deny();
+                activity._audioPermissionRequest = request;
+                activity.RequestPermissions(
+                    new[] { global::Android.Manifest.Permission.RecordAudio },
+                    AudioPermissionRequestCode);
+            });
+        }
+
         public override bool OnShowFileChooser(
             WebView? webView,
             IValueCallback? filePathCallback,

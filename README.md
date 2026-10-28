@@ -6,7 +6,7 @@ Mingle is a static website for GitHub Pages. It does not need an app server to s
 
 1. Create a Supabase project on the [Supabase Dashboard](https://supabase.com/dashboard). Its free plan has storage, usage, and inactivity limits; review the current plan before inviting people.
 2. In **Authentication → Providers → Email**, keep email/password sign-in enabled and turn **Confirm email** off if you want new accounts to start chatting immediately. Set the minimum password length to 8.
-3. Open **SQL Editor**, paste all of [`supabase/schema.sql`](./supabase/schema.sql), and run it. Run the updated file again after upgrading an existing Mingle deployment. The migration keeps existing profiles and messages, adds email lookup, archiving, message edit/delete and private photo/video storage, and refreshes the database functions and policies.
+3. Open **SQL Editor**, paste all of [`supabase/schema.sql`](./supabase/schema.sql), and run it. Run the updated file again after upgrading an existing Mingle deployment. The migration keeps existing profiles and messages, adds email lookup, archiving, message edit/delete, private photo/video/voice storage, and invite-only communities with topic groups.
 4. Open **Project Settings → API** and copy the **Project URL** and the **publishable key** (or legacy `anon` key). Put those values in [`server/wwwroot/supabase-config.js`](./server/wwwroot/supabase-config.js):
 
    ```js
@@ -30,7 +30,8 @@ GitHub Pages is available for public repositories on GitHub Free; private-reposi
 - Find contacts by their exact registered mobile number or email address. A successful lookup shows both details to the signed-in user, so only share an email or number you are comfortable making discoverable to people who know it.
 - Existing accounts can continue logging in with their old 10-digit number and password. Add an email in your profile to switch to email login and enable password recovery.
 - Messages are stored in Supabase and delivered live while the site is open. Chats can be archived; messages can be edited for 15 minutes or deleted for everyone. If the live connection drops, an open conversation periodically refreshes.
-- Attach photos (up to 10 MB) and videos (up to 25 MB) using the + button beside the message box. Media is stored in a private Supabase Storage bucket and only the two people in that conversation can view it. Free Supabase storage and bandwidth are limited; check your project quota before sharing many large videos.
+- Create invite-only communities and topic groups from the **Groups** tab. Community owners can create groups and invite existing Mingle users by their registered mobile number or email; everyone invited to a community can use its groups. Group messages, photos, videos, and voice notes are available only to community members.
+- Send photos (up to 10 MB), videos (up to 25 MB), and voice notes (up to 25 MB, recorded for at most 2 minutes) from the message bar. Voice recording requires microphone permission and a supported browser; the Android wrapper asks for microphone access when needed. Media is stored in a private Supabase Storage bucket. Free Supabase storage and bandwidth are limited; check your project quota before sharing large media.
 - Optional browser notifications work while the website is open in the background and notification permission is granted. Notifications when the app/browser is fully closed are not configured.
 - An AI assistant is not included.
 - The optional PIN chat lock and its PIN verifier are stored only in this browser/device. This is a convenience screen lock, not server-side access control or message encryption; do not rely on it to protect data from someone with access to the account or browser storage.
@@ -59,4 +60,4 @@ dotnet workload install android
 dotnet publish .\android-app\Mingle.Android.csproj -c Release -f net10.0-android -p:AndroidPackageFormat=apk
 ```
 
-The APK is written under `android-app\bin\Release\net10.0-android\publish`. The Mingle 1.2 APK opens the GitHub Pages website automatically and supports picking photos/videos from the Android device; previously installed versions keep their saved website address.
+The APK is written under `android-app\bin\Release\net10.0-android\publish`. The Mingle 1.3 APK opens the GitHub Pages website automatically, supports picking photos/videos from the Android device, and requests microphone access for voice messages; previously installed versions keep their saved website address.
