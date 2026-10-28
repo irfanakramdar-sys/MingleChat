@@ -5,8 +5,8 @@ Mingle is a static website for GitHub Pages. It does not need an app server to s
 ## Set up the free database
 
 1. Create a Supabase project on the [Supabase Dashboard](https://supabase.com/dashboard). Its free plan has storage, usage, and inactivity limits; review the current plan before inviting people.
-2. In **Authentication → Providers → Email**, keep email/password sign-in enabled and turn **Confirm email** off. Mingle uses a generated, non-deliverable email address behind each 10-digit mobile number, so no email or SMS verification is sent. Set the minimum password length to 8.
-3. Open **SQL Editor**, paste all of [`supabase/schema.sql`](./supabase/schema.sql), and run it. This creates the profiles and messages tables, private row-level security policies, account lookup limits, and the Realtime publication.
+2. In **Authentication → Providers → Email**, keep email/password sign-in enabled and turn **Confirm email** off if you want new accounts to start chatting immediately. Set the minimum password length to 8.
+3. Open **SQL Editor**, paste all of [`supabase/schema.sql`](./supabase/schema.sql), and run it. Run the updated file again after upgrading an existing Mingle deployment. The migration keeps existing profiles and messages, adds email lookup, archiving, and message edit/delete support, and refreshes the database functions and policies.
 4. Open **Project Settings → API** and copy the **Project URL** and the **publishable key** (or legacy `anon` key). Put those values in [`server/wwwroot/supabase-config.js`](./server/wwwroot/supabase-config.js):
 
    ```js
@@ -26,14 +26,16 @@ GitHub Pages is available for public repositories on GitHub Free; private-reposi
 
 ## Use Mingle
 
-- Create an account with a name, a unique 10-digit mobile number, and a password of at least 8 characters. Phone-number ownership is not verified.
-- Share the generated 8-digit account number. Someone can enter it to find the profile and start a chat.
-- Messages are stored in the Supabase database and delivered live while the site is open. If a live connection drops, an open conversation periodically refreshes.
-- Optional browser notifications work while the website is open in the background and notification permission is granted. Background push delivery is not included.
+- Create an account with a name, email, unique 10-digit mobile number, and a password of at least 8 characters. Neither the phone number nor email is verified when email confirmation is disabled.
+- Find contacts by their exact registered mobile number or email address. A successful lookup shows both details to the signed-in user, so only share an email or number you are comfortable making discoverable to people who know it.
+- Existing accounts can continue logging in with their old 10-digit number and password. Add an email in your profile to switch to email login and enable password recovery.
+- Messages are stored in Supabase and delivered live while the site is open. Chats can be archived; messages can be edited for 15 minutes or deleted for everyone. If the live connection drops, an open conversation periodically refreshes.
+- Optional browser notifications work while the website is open in the background and notification permission is granted. Notifications when the app/browser is fully closed are not configured.
+- The optional PIN chat lock and its PIN verifier are stored only in this browser/device. This is a convenience screen lock, not server-side access control or message encryption; do not rely on it to protect data from someone with access to the account or browser storage.
 
-Passwords are handled by Supabase Auth, not saved in the website files. This sign-in method does not collect an email address, so password recovery is unavailable; users who forget a password cannot receive a reset email. Profile lookup displays the mobile number to an authenticated user who has the matching account number. Messages are not end-to-end encrypted, and the Supabase project owner can access the database.
+Passwords are handled by Supabase Auth, not saved in website files. Messages are not end-to-end encrypted, and the Supabase project owner can access the database. Supabase Free has storage, usage, and inactivity limits; check its current limits before relying on it for important conversations.
 
-Accounts and messages from the old self-hosted server are not migrated automatically. Everyone needs to create a new account on the Supabase-backed site.
+Existing Supabase accounts and messages are kept by the schema migration. Accounts and messages stored only in the old self-hosted server are not migrated automatically.
 
 ## Build locally
 

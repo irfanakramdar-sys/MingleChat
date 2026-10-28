@@ -30,7 +30,11 @@
           <label for="displayName">Your name</label>
           <input id="displayName" autocomplete="name" maxlength="40" placeholder="Enter your name">
         </div>
-        <div class="field">
+        <div id="emailField" class="field">
+          <label for="emailAddress">Email address</label>
+          <input id="emailAddress" type="email" inputmode="email" autocomplete="email" maxlength="254" placeholder="Enter your email" required>
+        </div>
+        <div id="phoneField" class="field" hidden>
           <label for="phoneNumber">Mobile number</label>
           <input id="phoneNumber" type="tel" inputmode="numeric" autocomplete="tel-national" maxlength="10" pattern="[0-9]{10}" placeholder="Enter 10 digits" required>
         </div>
@@ -40,8 +44,9 @@
         </div>
         <p id="authError" class="feedback error" role="alert" hidden></p>
         <button id="authSubmit" class="primary" type="submit">Log in</button>
+        <button id="forgotPasswordButton" class="text-button" type="button">Forgot password?</button>
       </form>
-      <p class="auth-note">Your mobile number must be unique. We'll also give you a separate account number to share. Passwords are securely stored; no verification code is required.</p>
+      <p class="auth-note">Use your email to log in. Add a unique 10-digit mobile number so friends can find you. Phone and email verification are not required.</p>
     </section>
   </main>
 
@@ -53,7 +58,7 @@
             <span class="brand-icon" aria-hidden="true">M</span>
             <strong>Mingle</strong>
           </a>
-          <button id="newChatButton" class="icon-button" type="button" aria-label="Chat with an account number" title="Start a chat">
+          <button id="newChatButton" class="icon-button" type="button" aria-label="Find someone by phone or email" title="Start a chat">
             <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
           </button>
         </header>
@@ -63,7 +68,7 @@
             <input id="searchInput" class="search-input" type="search" placeholder="Search conversations" aria-label="Search conversations">
           </label>
         </div>
-        <div class="list-heading"><span id="listTitle">Messages</span><span id="chatCount"></span></div>
+        <div class="list-heading"><span id="listTitle">Messages</span><button id="archiveViewButton" class="list-action" type="button">Archived</button><span id="chatCount"></span></div>
         <div id="chatList" class="chat-list" aria-live="polite"></div>
         <nav class="nav" aria-label="Main navigation">
           <button class="nav-button active" data-page="chats" type="button"><span aria-hidden="true">▤</span>Chats</button>
@@ -78,10 +83,10 @@
   <dialog id="newChatDialog">
     <form id="newChatForm">
       <h2>Start a new chat</h2>
-      <p>Enter the other person's unique account number.</p>
+      <p>Find someone using the mobile number or email address they registered with.</p>
       <div class="field">
-        <label for="accountNumberInput">Account number</label>
-        <input id="accountNumberInput" class="dialog-input" inputmode="numeric" autocomplete="off" maxlength="8" pattern="[0-9]{8}" placeholder="Enter 8 digits" required>
+        <label for="identifierInput">Mobile number or email</label>
+        <input id="identifierInput" class="dialog-input" inputmode="email" autocomplete="off" maxlength="254" placeholder="Enter a 10-digit number or email" required>
       </div>
       <p id="dialogError" class="feedback error" role="alert" hidden></p>
       <div class="dialog-actions">

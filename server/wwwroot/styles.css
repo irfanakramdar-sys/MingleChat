@@ -56,9 +56,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visib
 .search-wrap svg { position: absolute; top: 13px; left: 12px; width: 16px; height: 16px; color: #92a098; pointer-events: none; }
 .search-input { width: 100%; height: 42px; padding: 0 12px 0 37px; border: 1px solid #e1e8e2; border-radius: 9px; outline: none; background: #fcfdfc; font-size: 12px; }
 .list-heading { display: flex; align-items: center; justify-content: space-between; padding: 13px 18px 7px; color: #77847c; font-size: 10px; font-weight: 750; letter-spacing: 1px; text-transform: uppercase; }
-.list-heading span + span { color: #9ba59f; font-size: 11px; font-weight: 500; letter-spacing: 0; text-transform: none; }
+.list-heading #chatCount { color: #9ba59f; font-size: 11px; font-weight: 500; letter-spacing: 0; text-transform: none; }
+.list-action { padding: 5px 8px; border: 0; border-radius: 7px; background: #eff6f0; color: var(--green); font-size: 10px; font-weight: 700; }
 .chat-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 7px; }
+.chat-row-container { display: flex; align-items: center; gap: 3px; }
 .chat-row { width: 100%; display: flex; align-items: center; gap: 11px; padding: 11px; border: 0; border-radius: 11px; background: #fff; color: inherit; text-align: left; }
+.chat-row-container .chat-row { min-width: 0; }
+.chat-archive-button, .chat-action-button { flex: 0 0 auto; padding: 7px; border: 0; border-radius: 8px; background: transparent; color: #6d8073; font-size: 10px; font-weight: 650; }
+.chat-archive-button:hover, .chat-action-button:hover { background: #edf5ef; color: var(--green); }
 .chat-row:hover { background: #f5f8f5; }
 .chat-row.selected { background: #edf5ef; }
 .avatar { width: 44px; height: 44px; display: inline-grid; flex: 0 0 auto; place-items: center; border-radius: 50%; background: #e8f0e9; color: #486853; font-size: 13px; font-weight: 750; }
@@ -79,6 +84,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visib
 .welcome h2 { margin: 18px 0 0; font-size: 21px; }
 .welcome p { max-width: 330px; margin: 8px 0 0; color: #849087; font-size: 12px; line-height: 1.7; }
 .conversation-header { justify-content: flex-start; background: #fff; }
+.conversation-header .profile-trigger { flex: 1; }
+.conversation-actions { display: flex; flex: 0 0 auto; gap: 3px; }
 .back-button { display: none; }
 .person { display: flex; min-width: 0; align-items: center; gap: 10px; }
 .person .avatar { width: 39px; height: 39px; }
@@ -89,6 +96,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visib
 .message { width: fit-content; max-width: min(78%, 410px); padding: 9px 11px 6px; border: 1px solid #edf0ed; border-radius: 12px 12px 12px 3px; background: #fff; color: #334139; font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; }
 .message.mine { align-self: flex-end; border-color: #d7eddd; border-radius: 12px 12px 3px 12px; background: #e9f4e9; }
 .message-meta { margin-top: 3px; color: #96a19a; font-size: 9px; text-align: right; }
+.deleted-message { color: #829087; font-style: italic; }
+.message-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 4px; }
+.message-actions button { padding: 2px 0; border: 0; background: transparent; color: #667e6e; font-size: 9px; }
 .composer { display: flex; align-items: flex-end; gap: 9px; padding: 11px 13px max(11px, env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: #fff; }
 .composer textarea { min-height: 43px; max-height: 112px; flex: 1; resize: none; padding: 12px 13px; border: 1px solid #e4eae5; border-radius: 13px; outline: none; background: #f9faf9; color: #26352c; font-size: 12px; line-height: 1.45; }
 .send-button { width: 43px; height: 43px; display: grid; flex: 0 0 auto; place-items: center; border: 0; border-radius: 13px; background: var(--green); color: white; }
@@ -113,6 +123,9 @@ dialog > form > p { margin: 8px 0 16px; color: #7f8b83; font-size: 12px; line-he
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 15px; }
 .secondary { min-height: 40px; padding: 0 13px; border: 1px solid var(--line); border-radius: 9px; background: white; color: #59665d; font-size: 12px; font-weight: 650; }
 .dialog-actions .primary { min-height: 40px; padding: 0 15px; font-size: 12px; }
+.text-button { display: block; margin: 12px auto 0; padding: 5px 8px; border: 0; background: transparent; color: var(--green); font-size: 11px; font-weight: 650; }
+.text-button:disabled { opacity: .6; }
+.feedback.success { color: #27724b; }
 @media (max-width: 680px) {
   .auth-card { padding: 27px 22px; }
   .app-shell { min-height: 0; padding: 0; }
@@ -121,6 +134,11 @@ dialog > form > p { margin: 8px 0 16px; color: #7f8b83; font-size: 12px; line-he
   .messenger.show-chat .sidebar, .messenger.show-page .sidebar { display: none; }
   .messenger.show-chat .panel, .messenger.show-page .panel { display: flex; }
   .sidebar-header, .conversation-header { min-height: 64px; }
+  .conversation-header { gap: 5px; padding: 0 8px; }
+  .conversation-header .person { gap: 6px; }
+  .conversation-header .person .avatar { width: 34px; height: 34px; }
+  .conversation-actions { gap: 0; }
+  .chat-action-button { padding: 6px 5px; font-size: 9px; }
   .back-button { display: inline-grid; margin-left: -6px; }
   .profile-content { padding-top: 20px; }
 }
