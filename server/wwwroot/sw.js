@@ -1,8 +1,8 @@
 "use strict";
 
-const SHELL_CACHE = "mingle-chat-pages-v11";
+const SHELL_CACHE = "mingle-chat-pages-v12";
 const APP_BASE = new URL("./", self.location.href);
-const APP_SHELL = ["", "index.html", "styles.css?v=20261123-3", "app.js?v=20261123-3", "manifest.json", "icon.svg"]
+const APP_SHELL = ["", "index.html", "styles.css?v=20261123-4", "app.js?v=20261123-4", "manifest.json", "icon.svg"]
   .map((path) => new URL(path, APP_BASE).toString());
 
 self.addEventListener("install", (event) => {

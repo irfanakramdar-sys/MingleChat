@@ -1381,10 +1381,13 @@ async function handleAuthentication(event) {
     const errorCode = String(error?.code || "").toLowerCase();
     const phoneAlreadyUsed = /profiles_phone_key|phone number.+(already|exists)|phone.+duplicate/i.test(message);
     const emailAlreadyRegistered = /user already registered|email.+(already registered|already exists)|user_already_exists/i.test(`${message} ${errorCode}`);
+    const signupDatabaseError = /database error saving new user/i.test(message);
     if (authMode === "create" && phoneAlreadyUsed) {
       showAuthError("This mobile number is already linked to a Mingle account. Use a different number, or log in with the email already linked to that account.");
     } else if (authMode === "create" && emailAlreadyRegistered) {
       showExistingAccountOptions("This email already has a Mingle account. Log in with its existing password, or send a password-reset link to that email.");
+    } else if (authMode === "create" && signupDatabaseError) {
+      showAuthError("Mingle could not save this account. Each account needs a unique 10-digit mobile number. Log in if this number is already in use; otherwise try a different number. If a new number also fails, rerun the latest Supabase schema.sql.");
     } else {
       showAuthError(message);
     }
