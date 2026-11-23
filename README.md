@@ -27,12 +27,13 @@ GitHub Pages is available for public repositories on GitHub Free; private-reposi
 ## Use Mingle
 
 - Create an account with a name, email, unique 10-digit mobile number, and a password of at least 8 characters. Neither the phone number nor email is verified when email confirmation is disabled.
-- Find contacts by their exact registered mobile number or email address. A successful lookup shows both details to the signed-in user, so only share an email or number you are comfortable making discoverable to people who know it.
+- Find contacts by their registered 10-digit mobile number (spaces, periods, and hyphens are accepted) or email address. A successful lookup shows both details to the signed-in user, so only share an email or number you are comfortable making discoverable to people who know it.
 - Existing accounts can continue logging in with their old 10-digit number and password. Add an email in your profile to switch to email login and enable password recovery.
 - Messages are stored in Supabase and delivered live while the site is open. Chats can be archived; messages can be edited for 15 minutes or deleted for everyone. If the live connection drops, an open conversation periodically refreshes.
 - Create invite-only communities and topic groups from the **Groups** tab. Community owners can create groups and invite existing Mingle users by their registered mobile number or email; everyone invited to a community can use its groups. Group messages, photos, videos, and voice notes are available only to community members.
 - Send photos (up to 10 MB), videos (up to 25 MB), and voice notes (up to 25 MB, recorded for at most 2 minutes) from the message bar. Voice recording requires microphone permission and a supported browser; the Android wrapper asks for microphone access when needed. Media is stored in a private Supabase Storage bucket. Free Supabase storage and bandwidth are limited; check your project quota before sharing large media.
-- Optional browser notifications work while the website is open in the background and notification permission is granted. Notifications when the app/browser is fully closed are not configured.
+- Open a one-to-one chat to use the video-camera and voice-call buttons in its header. Search filters messages in the open chat; the three-dot menu contains archive and device-only chat-lock actions. Calls use browser WebRTC and require HTTPS, microphone/camera permission, and the other person to be online and signed in. Networks that block direct peer-to-peer connections may also require the site owner to configure a TURN relay.
+- Notifications and incoming-call alerts can arrive while a phone screen is locked or off if the phone is powered on, connected to the internet, permission is granted, and background push is configured. Browser push needs VAPID credentials; Android push needs Firebase setup. A fully powered-off phone cannot receive calls or notifications, and an incoming call still needs to be accepted by the recipient.
 - An AI assistant is not included.
 - The optional PIN chat lock and its PIN verifier are stored only in this browser/device. This is a convenience screen lock, not server-side access control or message encryption; do not rely on it to protect data from someone with access to the account or browser storage.
 
@@ -60,4 +61,4 @@ dotnet workload install android
 dotnet publish .\android-app\Mingle.Android.csproj -c Release -f net10.0-android -p:AndroidPackageFormat=apk
 ```
 
-The APK is written under `android-app\bin\Release\net10.0-android\publish`. The Mingle 1.3 APK opens the GitHub Pages website automatically, supports picking photos/videos from the Android device, and requests microphone access for voice messages; previously installed versions keep their saved website address.
+The APK is written under `android-app\bin\Release\net10.0-android\publish`. The Mingle Android wrapper opens the configured GitHub Pages website automatically, supports picking photos/videos from the Android device, and requests microphone/camera access for calls and voice messages; previously installed versions keep their saved website address.

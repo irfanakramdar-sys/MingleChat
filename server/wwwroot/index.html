@@ -7,7 +7,7 @@
   <meta name="description" content="Send messages, voice notes, and private group chats with Mingle.">
   <link rel="manifest" href="./manifest.json">
   <link rel="icon" href="./icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./styles.css">
+  <link rel="stylesheet" href="./styles.css?v=20261123-1">
   <title>Mingle Chat</title>
 </head>
 <body>
@@ -77,7 +77,7 @@
         <nav class="nav" aria-label="Main navigation">
           <button class="nav-button active" data-page="chats" type="button"><span aria-hidden="true">▤</span>Chats</button>
           <button class="nav-button" data-page="groups" type="button"><span aria-hidden="true">◎</span>Groups</button>
-          <button class="nav-button" data-page="profile" type="button"><span aria-hidden="true">◉</span>Profile</button>
+          <button class="nav-button" data-page="settings" type="button"><span aria-hidden="true">⚙</span>Settings</button>
         </nav>
       </aside>
       <section id="contentPanel" class="panel" aria-label="Conversation"></section>
@@ -91,7 +91,7 @@
       <p>Find someone using the mobile number or email address they registered with.</p>
       <div class="field">
         <label for="identifierInput">Mobile number or email</label>
-        <input id="identifierInput" class="dialog-input" inputmode="email" autocomplete="off" maxlength="254" placeholder="Enter a 10-digit number or email" required>
+        <input id="identifierInput" class="dialog-input" inputmode="email" autocomplete="off" maxlength="254" placeholder="10-digit number or email" required>
       </div>
       <p id="dialogError" class="feedback error" role="alert" hidden></p>
       <div class="dialog-actions">
@@ -101,6 +101,26 @@
     </form>
   </dialog>
 
-  <script type="module" src="./app.js?v=20261028-4"></script>
+  <dialog id="callDialog" class="call-dialog" aria-labelledby="callTitle">
+    <section class="call-panel">
+      <header class="call-panel-header">
+        <div><h2 id="callTitle">Mingle call</h2><p id="callStatus">Connecting…</p></div>
+        <button id="endCallButton" class="call-end-button" type="button" aria-label="End call">×</button>
+      </header>
+      <div class="call-media">
+        <video id="remoteVideo" autoplay playsinline hidden></video>
+        <audio id="remoteAudio" autoplay></audio>
+        <video id="localVideo" autoplay playsinline muted hidden></video>
+        <div id="audioCallAvatar" class="call-avatar" aria-hidden="true">M</div>
+      </div>
+      <div class="call-actions">
+        <button id="acceptCallButton" class="call-accept-button" type="button">Accept</button>
+        <button id="declineCallButton" class="call-end-button" type="button">Decline</button>
+        <button id="hangUpButton" class="call-end-button" type="button" hidden>End call</button>
+      </div>
+    </section>
+  </dialog>
+
+  <script type="module" src="./app.js?v=20261123-1"></script>
 </body>
 </html>
