@@ -283,14 +283,8 @@ async function getMyProfile() {
 function normalizeContactIdentifier(identifier) {
   const cleanedIdentifier = identifier.trim();
   const compactIdentifier = cleanedIdentifier.replace(/[\s().-]/g, "");
-  if (/^\+?\d+$/.test(compactIdentifier)) {
-    let phoneIdentifier = compactIdentifier.startsWith("+")
-      ? compactIdentifier.slice(1)
-      : compactIdentifier;
-    if (/^92\d{10}$/.test(phoneIdentifier)) phoneIdentifier = phoneIdentifier.slice(2);
-    else if (/^0\d{10}$/.test(phoneIdentifier)) phoneIdentifier = phoneIdentifier.slice(1);
-    if (/^\d{10}$/.test(phoneIdentifier)) return phoneIdentifier;
-  }
+  if (/^0\d{10}$/.test(compactIdentifier)) return compactIdentifier.slice(1);
+  if (/^\d{10}$/.test(compactIdentifier)) return compactIdentifier;
   return cleanedIdentifier.toLowerCase();
 }
 
@@ -2347,9 +2341,9 @@ async function findContact(event) {
   const identifier = identifierInput.value.trim();
   const normalizedIdentifier = normalizeContactIdentifier(identifier);
   const isPhone = /^\d{10}$/.test(normalizedIdentifier);
-  const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identifier);
+  const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedIdentifier);
   if (!isPhone && !isEmail) {
-    dialogError.textContent = "Enter a 10-digit mobile number, a number starting with 0 or +92, or a valid email address.";
+    dialogError.textContent = "Enter the 10-digit mobile number without a country code, or a valid email address.";
     dialogError.hidden = false;
     return;
   }

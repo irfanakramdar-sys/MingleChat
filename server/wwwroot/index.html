@@ -7,7 +7,7 @@
   <meta name="description" content="Send messages, voice notes, and private group chats with Mingle.">
   <link rel="manifest" href="./manifest.json">
   <link rel="icon" href="./icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./styles.css?v=20261123-2">
+  <link rel="stylesheet" href="./styles.css?v=20261123-3">
   <title>Mingle Chat</title>
 </head>
 <body>
@@ -88,10 +88,10 @@
   <dialog id="newChatDialog">
     <form id="newChatForm">
       <h2>Start a new chat</h2>
-      <p>Find someone using the mobile number or email address they registered with. Pakistani numbers with a leading 0 or +92 are accepted.</p>
+      <p>Find someone using the 10-digit mobile number without a country code, or the email address they registered with.</p>
       <div class="field">
         <label for="identifierInput">Mobile number or email</label>
-        <input id="identifierInput" class="dialog-input" inputmode="email" autocomplete="off" maxlength="254" placeholder="10-digit, 03…, +92… or email" required>
+        <input id="identifierInput" class="dialog-input" inputmode="email" autocomplete="off" maxlength="254" placeholder="10-digit mobile number or email" required>
       </div>
       <p id="dialogError" class="feedback error" role="alert" hidden></p>
       <div class="dialog-actions">
@@ -121,6 +121,6 @@
     </section>
   </dialog>
 
-  <script type="module" src="./app.js?v=20261123-2"></script>
+  <script type="module" src="./app.js?v=20261123-3"></script>
 </body>
 </html>

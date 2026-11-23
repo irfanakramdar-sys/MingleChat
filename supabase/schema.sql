@@ -453,6 +453,29 @@
   with existing_accounts as (
     select
       u.id,
+      case
+        when pg_catalog.lower(coalesce(u.email, '')) ~ '^m[0-9]{10}@accounts\.mingle\.invalid$' then null
+        else nullif(pg_catalog.lower(pg_catalog.btrim(coalesce(u.email, ''))), '')
+      end as email
+    from auth.users as u
+  )
+  update public.profiles as profile
+  set email = existing_accounts.email
+  from existing_accounts
+  where profile.id = existing_accounts.id
+    and nullif(pg_catalog.btrim(profile.email), '') is null
+    and existing_accounts.email ~ '^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$'
+    and not exists (
+      select 1
+      from public.profiles as other_profile
+      where other_profile.id <> profile.id
+        and other_profile.email is not null
+        and pg_catalog.lower(pg_catalog.btrim(other_profile.email)) = existing_accounts.email
+    );
+
+  with existing_accounts as (
+    select
+      u.id,
       pg_catalog.btrim(coalesce(u.raw_user_meta_data ->> 'name', '')) as name,
       case
         when pg_catalog.lower(coalesce(u.email, '')) ~ '^m[0-9]{10}@accounts\.mingle\.invalid$'
