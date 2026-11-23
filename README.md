@@ -6,7 +6,7 @@ Mingle is a static website for GitHub Pages. It does not need an app server to s
 
 1. Create a Supabase project on the [Supabase Dashboard](https://supabase.com/dashboard). Its free plan has storage, usage, and inactivity limits; review the current plan before inviting people.
 2. In **Authentication → Providers → Email**, keep email/password sign-in enabled and turn **Confirm email** off if you want new accounts to start chatting immediately. Set the minimum password length to 8.
-3. Open **SQL Editor**, paste all of [`supabase/schema.sql`](./supabase/schema.sql), and run it. Run the updated file again after upgrading an existing Mingle deployment. The migration keeps existing profiles and messages, adds email lookup, archiving, message edit/delete, private photo/video/voice storage, and invite-only communities with topic groups.
+3. Open **SQL Editor**, paste all of [`supabase/schema.sql`](./supabase/schema.sql), and run it. Run the updated file again after upgrading an existing Mingle deployment. The migration keeps existing profiles and messages, backfills eligible profiles from existing auth metadata, refreshes the API schema cache, and adds email lookup, archiving, message edit/delete, private photo/video/voice storage, and invite-only communities with topic groups.
 4. Open **Project Settings → API** and copy the **Project URL** and the **publishable key** (or legacy `anon` key). Put those values in [`server/wwwroot/supabase-config.js`](./server/wwwroot/supabase-config.js):
 
    ```js
@@ -27,7 +27,7 @@ GitHub Pages is available for public repositories on GitHub Free; private-reposi
 ## Use Mingle
 
 - Create an account with a name, email, unique 10-digit mobile number, and a password of at least 8 characters. Neither the phone number nor email is verified when email confirmation is disabled.
-- Find contacts by their registered 10-digit mobile number (spaces, periods, and hyphens are accepted) or email address. A successful lookup shows both details to the signed-in user, so only share an email or number you are comfortable making discoverable to people who know it.
+- Find contacts by their registered 10-digit mobile number (spaces, periods, hyphens, a leading 0, and the +92 country prefix are accepted) or email address. The person must have a Mingle account in the same Supabase project. A successful lookup shows both details to the signed-in user, so only share an email or number you are comfortable making discoverable to people who know it.
 - Existing accounts can continue logging in with their old 10-digit number and password. Add an email in your profile to switch to email login and enable password recovery.
 - Messages are stored in Supabase and delivered live while the site is open. Chats can be archived; messages can be edited for 15 minutes or deleted for everyone. If the live connection drops, an open conversation periodically refreshes.
 - Create invite-only communities and topic groups from the **Groups** tab. Community owners can create groups and invite existing Mingle users by their registered mobile number or email; everyone invited to a community can use its groups. Group messages, photos, videos, and voice notes are available only to community members.

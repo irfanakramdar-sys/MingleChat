@@ -282,10 +282,16 @@ async function getMyProfile() {
 
 function normalizeContactIdentifier(identifier) {
   const cleanedIdentifier = identifier.trim();
-  const phoneIdentifier = cleanedIdentifier.replace(/[\s().-]/g, "");
-  return /^\d{10}$/.test(phoneIdentifier)
-    ? phoneIdentifier
-    : cleanedIdentifier.toLowerCase();
+  const compactIdentifier = cleanedIdentifier.replace(/[\s().-]/g, "");
+  if (/^\+?\d+$/.test(compactIdentifier)) {
+    let phoneIdentifier = compactIdentifier.startsWith("+")
+      ? compactIdentifier.slice(1)
+      : compactIdentifier;
+    if (/^92\d{10}$/.test(phoneIdentifier)) phoneIdentifier = phoneIdentifier.slice(2);
+    else if (/^0\d{10}$/.test(phoneIdentifier)) phoneIdentifier = phoneIdentifier.slice(1);
+    if (/^\d{10}$/.test(phoneIdentifier)) return phoneIdentifier;
+  }
+  return cleanedIdentifier.toLowerCase();
 }
 
 async function findProfile(identifier) {
@@ -298,7 +304,7 @@ async function findProfile(identifier) {
     throw new Error(error.message);
   }
   const row = Array.isArray(data) ? data[0] : data;
-  if (!row) throw new Error("No Mingle account matches that mobile number or email.");
+  if (!row) throw new Error("No Mingle account matches that number or email. Check the exact number and make sure the person has a Mingle account in this project.");
   return mapProfile(row);
 }
 
@@ -2343,7 +2349,7 @@ async function findContact(event) {
   const isPhone = /^\d{10}$/.test(normalizedIdentifier);
   const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identifier);
   if (!isPhone && !isEmail) {
-    dialogError.textContent = "Enter a 10-digit mobile number (spaces and hyphens are okay) or a valid email address.";
+    dialogError.textContent = "Enter a 10-digit mobile number, a number starting with 0 or +92, or a valid email address.";
     dialogError.hidden = false;
     return;
   }

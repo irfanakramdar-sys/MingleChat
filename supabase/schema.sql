@@ -450,6 +450,28 @@
     after insert on auth.users
     for each row execute function public.handle_new_user();
 
+  with existing_accounts as (
+    select
+      u.id,
+      pg_catalog.btrim(coalesce(u.raw_user_meta_data ->> 'name', '')) as name,
+      case
+        when pg_catalog.lower(coalesce(u.email, '')) ~ '^m[0-9]{10}@accounts\.mingle\.invalid$'
+          then pg_catalog.substring(pg_catalog.lower(u.email), '^m([0-9]{10})@accounts\.mingle\.invalid$')
+        else pg_catalog.btrim(coalesce(u.raw_user_meta_data ->> 'phone', ''))
+      end as phone,
+      case
+        when pg_catalog.lower(coalesce(u.email, '')) ~ '^m[0-9]{10}@accounts\.mingle\.invalid$' then null
+        else nullif(pg_catalog.lower(pg_catalog.btrim(coalesce(u.email, ''))), '')
+      end as email
+    from auth.users as u
+  )
+  insert into public.profiles (id, name, phone, email)
+  select id, name, phone, email
+  from existing_accounts
+  where pg_catalog.char_length(name) between 1 and 40
+    and phone ~ '^[0-9]{10}$'
+  on conflict do nothing;
+
   create or replace function public.ensure_my_profile()
   returns setof public.profiles
   language plpgsql
@@ -959,3 +981,5 @@
     end if;
   end;
   $$;
+
+  notify pgrst, 'reload schema';
