@@ -81,6 +81,27 @@
     constraint chat_archives_no_self check (user_id <> peer_id)
   );
 
+  create table if not exists public.hidden_chats (
+    user_id uuid not null references auth.users (id) on delete cascade,
+    peer_id uuid not null references public.profiles (id) on delete cascade,
+    hidden_at timestamptz not null default now(),
+    primary key (user_id, peer_id),
+    constraint hidden_chats_no_self check (user_id <> peer_id)
+  );
+
+  create table if not exists public.chat_clears (
+    user_id uuid not null references auth.users (id) on delete cascade,
+    peer_id uuid not null references public.profiles (id) on delete cascade,
+    cleared_at timestamptz not null default now(),
+    primary key (user_id, peer_id),
+    constraint chat_clears_no_self check (user_id <> peer_id)
+  );
+
+  create table if not exists public.user_presence (
+    user_id uuid primary key references auth.users (id) on delete cascade,
+    last_seen_at timestamptz not null default now()
+  );
+
   create table if not exists public.communities (
     id uuid primary key default gen_random_uuid(),
     name text not null check (char_length(btrim(name)) between 1 and 60),
@@ -249,6 +270,9 @@
   alter table public.messages enable row level security;
   alter table public.profile_lookup_attempts enable row level security;
   alter table public.chat_archives enable row level security;
+  alter table public.hidden_chats enable row level security;
+  alter table public.chat_clears enable row level security;
+  alter table public.user_presence enable row level security;
   alter table public.communities enable row level security;
   alter table public.community_members enable row level security;
   alter table public.community_groups enable row level security;
@@ -295,6 +319,29 @@
   create policy "Users can unarchive their chats"
     on public.chat_archives for delete to authenticated
     using ((select auth.uid()) = user_id);
+
+  drop policy if exists "Users can manage hidden chats" on public.hidden_chats;
+  create policy "Users can manage hidden chats"
+    on public.hidden_chats for all to authenticated
+    using ((select auth.uid()) = user_id)
+    with check ((select auth.uid()) = user_id and user_id <> peer_id);
+
+  drop policy if exists "Users can manage chat clears" on public.chat_clears;
+  create policy "Users can manage chat clears"
+    on public.chat_clears for all to authenticated
+    using ((select auth.uid()) = user_id)
+    with check ((select auth.uid()) = user_id and user_id <> peer_id);
+
+  drop policy if exists "Users can view online presence" on public.user_presence;
+  create policy "Users can view online presence"
+    on public.user_presence for select to authenticated
+    using (true);
+
+  drop policy if exists "Users can update their own presence" on public.user_presence;
+  create policy "Users can update their own presence"
+    on public.user_presence for all to authenticated
+    using ((select auth.uid()) = user_id)
+    with check ((select auth.uid()) = user_id);
 
   drop policy if exists "Community members can view their communities" on public.communities;
   create policy "Community members can view their communities"
@@ -372,12 +419,16 @@
       with check (user_id = (select auth.uid()));
 
   revoke all on public.profiles, public.messages, public.chat_archives,
+    public.hidden_chats, public.chat_clears, public.user_presence,
     public.communities, public.community_members, public.community_groups, public.group_messages
     from anon, authenticated;
   grant select on public.profiles to authenticated;
   grant select, insert on public.messages to authenticated;
   grant update (read_at) on public.messages to authenticated;
   grant select, insert, delete on public.chat_archives to authenticated;
+  grant select, insert, delete on public.hidden_chats to authenticated;
+  grant select, insert, delete on public.chat_clears to authenticated;
+  grant select, update, insert on public.user_presence to authenticated;
   grant select on public.communities, public.community_members, public.community_groups to authenticated;
   grant select, insert on public.group_messages to authenticated;
   grant select, insert on public.call_sessions, public.call_signals to authenticated;
@@ -488,6 +539,28 @@
 
     insert into public.profiles (id, name, phone, email)
     values (new.id, v_name, v_phone, v_email);
+
+    insert into public.user_presence (user_id, last_seen_at)
+    values (new.id, pg_catalog.now())
+    on conflict (user_id) do update
+      set last_seen_at = excluded.last_seen_at;
+
+    if new.id <> coalesce((
+      select account.id
+      from auth.users as account
+      where account.raw_app_meta_data ->> 'role' = 'owner'
+      order by account.created_at
+      limit 1
+    ), '00000000-0000-0000-0000-000000000000'::uuid) then
+      insert into public.messages (sender_id, recipient_id, text)
+      select owner_account.id, new.id,
+             'Hi ' || v_name || ' welcome to Mingle 🎉' || E'\n\n' ||
+             'If you encounter any issues, bugs, or other problems, you can report them in our group''s complaints section. We will work on resolving the reported complaints, bugs, errors, and other issues within 4–6 days.'
+      from auth.users as owner_account
+      where owner_account.raw_app_meta_data ->> 'role' = 'owner'
+      order by owner_account.created_at
+      limit 1;
+    end if;
 
     return new;
   end;
@@ -696,6 +769,12 @@
     left join public.chat_archives as archive
       on archive.user_id = auth.uid()
     and archive.peer_id = peers.peer_id
+    left join public.hidden_chats as hidden_chat
+      on hidden_chat.user_id = auth.uid()
+     and hidden_chat.peer_id = peers.peer_id
+    left join public.chat_clears as chat_clear
+      on chat_clear.user_id = auth.uid()
+     and chat_clear.peer_id = peers.peer_id
     left join lateral (
       select case
           when m.deleted_at is not null then 'This message was deleted.'
@@ -707,8 +786,9 @@
         m.sender_id,
         m.created_at
       from public.messages as m
-      where (m.sender_id = auth.uid() and m.recipient_id = peers.peer_id)
-        or (m.sender_id = peers.peer_id and m.recipient_id = auth.uid())
+      where ((m.sender_id = auth.uid() and m.recipient_id = peers.peer_id)
+        or (m.sender_id = peers.peer_id and m.recipient_id = auth.uid()))
+        and m.created_at > coalesce(chat_clear.cleared_at, '-infinity'::timestamptz)
       order by m.created_at desc, m.id desc
       limit 1
     ) as latest on true
@@ -718,8 +798,10 @@
       where m.sender_id = peers.peer_id
         and m.recipient_id = auth.uid()
         and m.read_at is null
+        and m.created_at > coalesce(chat_clear.cleared_at, '-infinity'::timestamptz)
     ) as unread on true
-    where (archive.peer_id is not null) = p_archived
+    where hidden_chat.peer_id is null
+      and (archive.peer_id is not null) = p_archived
     order by latest.created_at desc nulls last;
   $$;
 
@@ -890,10 +972,10 @@
     where message.id = p_message_id
       and message.sender_id = auth.uid()
       and message.deleted_at is null
-      and message.created_at >= pg_catalog.now() - interval '15 minutes';
+      and message.created_at >= pg_catalog.now() - interval '45 minutes';
 
     if not found then
-      raise exception 'This message cannot be edited. Messages can only be edited within 15 minutes.';
+      raise exception 'This message cannot be edited. Messages can only be edited within 45 minutes.';
     end if;
   end;
   $$;
@@ -947,10 +1029,10 @@
     where id = p_message_id
       and sender_id = auth.uid()
       and deleted_at is null
-      and created_at >= pg_catalog.now() - interval '15 minutes';
+      and created_at >= pg_catalog.now() - interval '45 minutes';
 
     if not found then
-      raise exception 'This message cannot be edited. Messages can only be edited within 15 minutes.';
+      raise exception 'This message cannot be edited. Messages can only be edited within 45 minutes.';
     end if;
   end;
   $$;
@@ -1008,11 +1090,7 @@
           join public.community_groups as group_chat on group_chat.id = message.group_id
           join public.communities as community on community.id = group_chat.community_id
           where message.attachment_path = object.name
-            and (
-              message.sender_id = p_user_id
-              or group_chat.created_by = p_user_id
-              or community.created_by = p_user_id
-            )
+            and (message.sender_id = p_user_id or community.created_by = p_user_id)
         )
       );
   $$;
@@ -1109,15 +1187,13 @@
     ) then
       raise exception 'Another owner account cannot be deleted.';
     end if;
-    if exists (
-      select 1
-      from public.account_media_paths(p_user_id) as media
-      join storage.objects as object
-        on object.name = media.storage_path
-       and object.bucket_id = 'mingle-chat-media'
-    ) then
-      raise exception 'Remove this account chat media before deleting the account.';
-    end if;
+
+    delete from public.messages as message
+    where message.sender_id = p_user_id
+       or message.recipient_id = p_user_id;
+
+    delete from public.group_messages as message
+    where message.sender_id = p_user_id;
 
     delete from auth.users as account
     where account.id = p_user_id

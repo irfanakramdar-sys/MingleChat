@@ -20,13 +20,13 @@ const identifierInput = $("#identifierInput");
 const dialogError = $("#dialogError");
 const toast = $("#toast");
 const callDialog = $("#callDialog");
-const adminPasswordDialog = $("#adminPasswordDialog");
 const MAX_IMAGE_SIZE = 10 * 1024 * 1024;
 const MAX_VIDEO_SIZE = 25 * 1024 * 1024;
 const MAX_VOICE_SIZE = 25 * 1024 * 1024;
 const MEDIA_BUCKET = "mingle-chat-media";
 const settingsSections = [
   { id: "account", icon: "◉", title: "Account", description: "Profile details, password and sign out" },
+  { id: "assistant", icon: "M", title: "Mingle Assistant", description: "Ask Mingle-related questions in English" },
   { id: "privacy", icon: "◇", title: "Privacy", description: "Discoverability, chat lock and message security" },
   { id: "chats", icon: "▤", title: "Chats", description: "Theme and chat wallpaper" },
   { id: "notifications", icon: "♧", title: "Notifications", description: "Message alerts and this device's permission" },
@@ -38,12 +38,12 @@ const settingsSections = [
 let authMode = "login";
 let profile = null;
 let isOwner = false;
-let pendingPasswordResetAccount = null;
 let chats = [];
 let currentPeer = null;
 let currentGroup = null;
 let communities = [];
 let currentPeerArchived = false;
+let currentPeerClearedAt = null;
 let page = "chats";
 let refreshTimer = null;
 let liveChannel = null;
@@ -62,6 +62,8 @@ let incomingCallChannel = null;
 let activeCall = null;
 let ringtoneContext = null;
 let ringtoneTimer = null;
+let presenceTimer = null;
+let assistantMessages = [];
 const unlockedPeerIds = new Set();
 const signedMediaUrls = new Map();
 
@@ -105,6 +107,38 @@ function db() {
     throw new Error("Chat is not configured yet. Ask the site owner to finish the Supabase setup.");
   }
   return supabase;
+}
+
+function isMingleAssistant(person) {
+  return person?.email === "mingle-assistant@accounts.mingle.invalid"
+    || person?.phone === "0000000000";
+}
+
+function getFreeAssistantReply(question) {
+  const text = String(question || "").trim();
+  const lower = text.toLowerCase();
+  if (!text) return "Please type an English question.";
+  if (/\b(hello|hi|hey)\b/.test(lower)) return "Hello! How can I help you today?";
+  if (/how (can|do) (i )?(reset|change).*password/.test(lower)) {
+    return "Open Settings, choose Account, and use Change password. If you forgot it, use the forgot-password option on the login screen.";
+  }
+  if (/how (can|do) (i )?(add|find)|find.*(contact|person)|add.*contact/.test(lower)) {
+    return "Use the + button next to Mingle, enter the person's exact 10-digit mobile number or registered email, and open the chat.";
+  }
+  if (/clear.*chat|remove.*chat/.test(lower)) {
+    return "Open a chat, tap the three-dot menu, and choose Clear chat or Remove chat. Clear chat hides old messages for you; Remove chat hides the conversation until you add the contact again.";
+  }
+  if (/online|offline|presence|read receipt|seen/.test(lower)) {
+    return "The profile header can show Online or the last-seen time. A sent message shows Read after the recipient opens it.";
+  }
+  if (/group|community/.test(lower)) {
+    return "Open Groups, create a community, and use + Group to create groups. Community owners and admins can invite members.";
+  }
+  if (/complaint|problem|bug|issue|error/.test(lower)) {
+    return "Describe the issue here or report it in the complaints section. Mingle aims to review valid reports within 4–6 days.";
+  }
+  if (/thank/.test(lower)) return "You're welcome!";
+  return "I can help with Mingle chats, contacts, groups, account settings, notifications, bugs, and simple questions. Please describe what you need in English.";
 }
 
 function mapProfile(row) {
@@ -361,6 +395,26 @@ function setAuthMode(mode) {
 
 function normalizePhoneNumber(value) {
   return value.replace(/\D/g, "").slice(0, 10);
+}
+
+async function updateMyPresence() {
+  if (!profile) return;
+  await db().from("user_presence").upsert({
+    user_id: profile.id,
+    last_seen_at: new Date().toISOString()
+  }, { onConflict: "user_id" });
+}
+
+async function getPeerPresence(peerId) {
+  const { data, error } = await db()
+    .from("user_presence")
+    .select("last_seen_at")
+    .eq("user_id", peerId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!data) return "Offline";
+  const seconds = (Date.now() - new Date(data.last_seen_at).getTime()) / 1000;
+  return seconds < 75 ? "Online" : `Offline · last seen ${timeLabel(data.last_seen_at)}`;
 }
 
 function updateNav(activePage) {
@@ -1241,6 +1295,40 @@ async function setChatArchived(peerId, archived) {
   }
 }
 
+async function removeChat(peerId) {
+  if (!window.confirm("Remove this chat from your conversations? Messages will remain available to the other account.")) return;
+  try {
+    const { error } = await db().from("hidden_chats").upsert(
+      { user_id: profile.id, peer_id: peerId, hidden_at: new Date().toISOString() },
+      { onConflict: "user_id,peer_id" }
+    );
+    if (error) throw new Error(error.message);
+    currentPeer = null;
+    currentPeerArchived = false;
+    clearInterval(messageTimer);
+    messenger.classList.remove("show-chat");
+    await refreshChats();
+    renderWelcome();
+  } catch (error) {
+    showToast(`Could not remove chat: ${error.message}`);
+  }
+}
+
+async function clearChat(peerId) {
+  if (!window.confirm("Clear this chat from your view? This does not delete messages for the other account.")) return;
+  try {
+    const { error } = await db().from("chat_clears").upsert(
+      { user_id: profile.id, peer_id: peerId, cleared_at: new Date().toISOString() },
+      { onConflict: "user_id,peer_id" }
+    );
+    if (error) throw new Error(error.message);
+    currentPeerClearedAt = new Date().toISOString();
+    await loadMessages();
+  } catch (error) {
+    showToast(`Could not clear chat: ${error.message}`);
+  }
+}
+
 function showLogin() {
   if (mediaRecorder?.state === "recording") stopVoiceRecording(true);
   if (liveChannel) void db().removeChannel(liveChannel);
@@ -1284,6 +1372,10 @@ async function showApp(userProfile) {
   messenger.classList.remove("show-chat", "show-page");
   await refreshChats();
   await refreshGroups();
+  await updateMyPresence();
+  clearInterval(presenceTimer);
+  presenceTimer = setInterval(() => void updateMyPresence(), 30000);
+  window.addEventListener("beforeunload", () => void updateMyPresence());
   startLiveConnection();
   startIncomingCallListener();
   void registerNativePushToken();
@@ -1664,6 +1756,9 @@ async function openChat(identifier) {
   if (mediaRecorder?.state === "recording") stopVoiceRecording(true);
   try {
     const peer = await findProfile(identifier);
+    await db().from("hidden_chats").delete()
+      .eq("user_id", profile.id)
+      .eq("peer_id", peer.id);
     if (!await unlockChat(peer.id)) return;
     currentPeer = peer;
     currentGroup = null;
@@ -1684,7 +1779,7 @@ async function openChat(identifier) {
     contentPanel.innerHTML = `<header class="conversation-header">
         <button id="backButton" class="icon-button back-button" type="button" aria-label="Back to messages"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m14.5 5-7 7 7 7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
         <button id="peerProfileButton" class="person profile-trigger" type="button" aria-label="View ${escapeText(peer.name)}'s profile">
-          <span class="avatar">${escapeText(initials(peer.name))}</span><span><span class="person-name">${escapeText(peer.name)}</span><span class="person-summary">${escapeText(peer.phone)} · View profile</span></span>
+          <span class="avatar">${escapeText(initials(peer.name))}</span><span><span class="person-name">${escapeText(peer.name)}</span><span id="peerPresence" class="person-summary">${escapeText(peer.phone)} · Checking status…</span></span>
         </button><div class="conversation-actions">
           <button id="videoCallButton" class="call-icon-button" type="button" aria-label="Start video call" title="Video call"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="6" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.8"/><path d="m15 10 6-3v10l-6-3" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg></button>
           <button id="audioCallButton" class="call-icon-button" type="button" aria-label="Start voice call" title="Voice call"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7.2 3.8 9.5 7.5 8 9.1a14 14 0 0 0 6.9 6.9l1.6-1.5 3.7 2.3-.6 3.1a2 2 0 0 1-2.2 1.6A17.5 17.5 0 0 1 2.5 6.6a2 2 0 0 1 1.6-2.2z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg></button>
@@ -1693,6 +1788,8 @@ async function openChat(identifier) {
             <button id="conversationMenuButton" class="call-icon-button" type="button" aria-label="More chat options" title="More options" aria-haspopup="menu" aria-expanded="false"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="19" r="1.7"/></svg></button>
             <div id="conversationMenu" class="conversation-menu" role="menu" hidden>
               <button id="archiveChatButton" type="button" role="menuitem">${currentPeerArchived ? "Unarchive chat" : "Archive chat"}</button>
+              <button id="clearChatButton" type="button" role="menuitem">Clear chat</button>
+              <button id="removeChatButton" type="button" role="menuitem">Remove chat</button>
               <button id="lockChatButton" type="button" role="menuitem">${getLockedPeerIds().has(peer.id) ? "Unlock chat" : "Lock chat"}</button>
             </div>
           </div>
@@ -1715,6 +1812,12 @@ async function openChat(identifier) {
       renderWelcome();
     });
     $("#peerProfileButton").addEventListener("click", () => renderProfile(peer));
+    const refreshPresence = async () => {
+      const status = await getPeerPresence(peer.id);
+      const presence = $("#peerPresence");
+      if (presence) presence.textContent = `${peer.phone} · ${status}`;
+    };
+    void refreshPresence();
     $("#videoCallButton").addEventListener("click", () => void startCall("video", peer));
     $("#audioCallButton").addEventListener("click", () => void startCall("audio", peer));
     $("#messageSearchButton").addEventListener("click", () => {
@@ -1738,6 +1841,14 @@ async function openChat(identifier) {
       closeConversationMenu();
       void setChatArchived(peer.id, !currentPeerArchived);
     });
+    $("#clearChatButton").addEventListener("click", () => {
+      closeConversationMenu();
+      void clearChat(peer.id);
+    });
+    $("#removeChatButton").addEventListener("click", () => {
+      closeConversationMenu();
+      void removeChat(peer.id);
+    });
     $("#lockChatButton").addEventListener("click", () => {
       closeConversationMenu();
       void toggleChatLock(peer);
@@ -1745,7 +1856,10 @@ async function openChat(identifier) {
     const messageInput = $("#messageInput");
     bindComposer();
     await loadMessages();
-    messageTimer = setInterval(() => void loadMessages(), 15000);
+    messageTimer = setInterval(() => {
+      void loadMessages();
+      void refreshPresence();
+    }, 15000);
     messageInput.focus();
   } catch (error) {
     showToast(error.message);
@@ -1795,12 +1909,19 @@ async function loadMessages() {
     if (group) {
       ({ data, error } = await db().rpc("get_group_messages", { p_group_id: group.id }));
     } else {
-      ({ data, error } = await db()
+      let messageQuery = db()
         .from("messages")
         .select("id,sender_id,recipient_id,text,created_at,read_at,updated_at,deleted_at,attachment_path,attachment_name,attachment_mime,attachment_size")
         .or(`and(sender_id.eq.${profile.id},recipient_id.eq.${peer.id}),and(sender_id.eq.${peer.id},recipient_id.eq.${profile.id})`)
-        .order("created_at", { ascending: true })
-        .limit(500));
+        .order("created_at", { ascending: true });
+      const { data: clearRow } = await db()
+        .from("chat_clears")
+        .select("cleared_at")
+        .eq("user_id", profile.id)
+        .eq("peer_id", peer.id)
+        .maybeSingle();
+      if (clearRow?.cleared_at) messageQuery = messageQuery.gt("created_at", clearRow.cleared_at);
+      ({ data, error } = await messageQuery.limit(500));
     }
     if (error) throw new Error(error.message);
     const messages = (data || []).map(mapMessage);
@@ -2144,6 +2265,7 @@ function renderSettingsSection(section) {
     notifications: "Notifications",
     storage: "Storage and data",
     help: "Help",
+    assistant: "Mingle Assistant",
     admin: "Owner tools"
   };
   const heading = labels[section];
@@ -2153,8 +2275,11 @@ function renderSettingsSection(section) {
   }
   const body = section === "admin"
     ? `<div class="settings-info-card"><strong>Permanent account deletion</strong><p>Deleting an account permanently removes its profile, direct chats, messages, community data and uploaded media. This cannot be undone. Your own account and other owners are protected.</p><button id="refreshAdminAccounts" class="notification-button" type="button">Refresh account list</button></div>
-       <div class="settings-info-card"><strong>Forgotten passwords</strong><p>Choose Reset password for an account to set a temporary password, even if it has no recovery email. The previous password cannot be viewed. Share the temporary password privately and ask the account owner to change it after signing in.</p></div>
        <div id="adminAccountList" class="admin-account-list" aria-live="polite"><p class="settings-help">Loading accounts…</p></div>`
+    : section === "assistant"
+      ? `<div class="settings-info-card"><strong>English Mingle Assistant</strong><p>This free assistant answers Mingle support questions. It runs on the device and does not send questions to a paid AI service.</p></div>
+         <div id="assistantHistory" class="settings-info-card" aria-live="polite"></div>
+         <form id="assistantForm" class="form"><div class="field"><label for="assistantQuestion">Ask in English</label><input id="assistantQuestion" maxlength="500" autocomplete="off" placeholder="How do I add a contact?" required></div><button class="primary" type="submit">Ask</button></form>`
     : section === "privacy"
     ? `<div class="settings-info-card"><strong>Who can find you</strong><p>Mingle users can find your account using your registered mobile number or email. These lookup options are required to start a chat.</p></div>
        <div class="settings-info-card"><strong>Chat lock</strong><p>A chat lock is saved only on this device. It is a convenience lock, not end-to-end encryption, and does not protect messages on the server.</p></div>
@@ -2188,6 +2313,22 @@ function renderSettingsSection(section) {
   if (section === "admin") {
     $("#refreshAdminAccounts").addEventListener("click", () => void loadAdminAccounts());
     void loadAdminAccounts();
+  } else if (section === "assistant") {
+    const history = $("#assistantHistory");
+    history.innerHTML = assistantMessages.map((item) =>
+      `<p><strong>${item.role === "user" ? "You" : "Mingle Assistant"}:</strong> ${escapeText(item.text)}</p>`
+    ).join("") || "<p>Ask a Mingle support question in English.</p>";
+    $("#assistantForm").addEventListener("submit", (event) => {
+      event.preventDefault();
+      const input = $("#assistantQuestion");
+      const question = input.value.trim();
+      if (!question) return;
+      const answer = getFreeAssistantReply(question);
+      assistantMessages.push({ role: "user", text: question }, { role: "assistant", text: answer });
+      assistantMessages = assistantMessages.slice(-20);
+      input.value = "";
+      renderSettingsSection("assistant");
+    });
   } else if (section === "chats") {
     contentPanel.querySelectorAll("[data-theme-choice]").forEach((button) => {
       const selected = button.dataset.themeChoice === getPreference("mingle-theme", "light");
@@ -2241,17 +2382,8 @@ async function loadAdminAccounts() {
     list.innerHTML = data.map((account) => `<article class="admin-account-row">
       <div class="admin-account-copy"><strong>${escapeText(account.name)}</strong>
         <small>${escapeText(account.email || "No email")} · ${escapeText(account.phone)}</small></div>
-      <div class="admin-account-actions">
-        <button class="secondary admin-reset-button" type="button" data-admin-reset="${escapeText(account.id)}" ${account.is_owner || account.id === profile?.id ? "disabled" : ""}>Reset password</button>
-        <button class="danger-button admin-delete-button" type="button" data-admin-delete="${escapeText(account.id)}" ${account.is_owner || account.id === profile?.id ? "disabled" : ""}>${account.is_owner ? "Owner" : "Delete"}</button>
-      </div>
+      <button class="danger-button admin-delete-button" type="button" data-admin-delete="${escapeText(account.id)}" ${account.is_owner ? "disabled" : ""}>${account.is_owner ? "Owner" : "Delete"}</button>
     </article>`).join("");
-    list.querySelectorAll("[data-admin-reset]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const account = data.find((item) => item.id === button.dataset.adminReset);
-        if (account) openAdminPasswordReset(account);
-      });
-    });
     list.querySelectorAll("[data-admin-delete]").forEach((button) => {
       button.addEventListener("click", () => {
         const account = data.find((item) => item.id === button.dataset.adminDelete);
@@ -2261,66 +2393,6 @@ async function loadAdminAccounts() {
   } catch (error) {
     console.error("Could not load owner account list:", error);
     list.textContent = `Could not load accounts: ${error.message}`;
-  }
-}
-
-function openAdminPasswordReset(account) {
-  if (!isOwner || account.is_owner || account.id === profile?.id) return;
-  pendingPasswordResetAccount = account;
-  $("#adminPasswordAccount").textContent = `${account.name} (${account.email || account.phone})`;
-  $("#adminPasswordForm").reset();
-  $("#adminPasswordError").hidden = true;
-  $("#adminPasswordSubmit").disabled = false;
-  $("#adminPasswordSubmit").textContent = "Set temporary password";
-  adminPasswordDialog.showModal();
-  $("#adminTemporaryPassword").focus();
-}
-
-async function resetAccountPassword(event) {
-  event.preventDefault();
-  const account = pendingPasswordResetAccount;
-  const newPassword = $("#adminTemporaryPassword").value;
-  const confirmPassword = $("#adminTemporaryPasswordConfirm").value;
-  const errorOutput = $("#adminPasswordError");
-  if (!isOwner || !account || account.is_owner || account.id === profile?.id) {
-    errorOutput.textContent = "Only the Mingle owner can reset a non-owner account password.";
-    errorOutput.hidden = false;
-    return;
-  }
-  if (newPassword !== confirmPassword) {
-    errorOutput.textContent = "The passwords do not match.";
-    errorOutput.hidden = false;
-    $("#adminTemporaryPasswordConfirm").focus();
-    return;
-  }
-
-  const submitButton = $("#adminPasswordSubmit");
-  submitButton.disabled = true;
-  submitButton.textContent = "Updating password…";
-  errorOutput.hidden = true;
-  try {
-    const { error } = await db().functions.invoke("admin-reset-password", {
-      body: { userId: account.id, password: newPassword }
-    });
-    if (error) {
-      let message = error.message;
-      if (error.context && typeof error.context.json === "function") {
-        const response = await error.context.json();
-        if (typeof response?.error === "string") message = response.error;
-      }
-      throw new Error(message);
-    }
-    adminPasswordDialog.close();
-    showToast(`Temporary password set for ${account.name}. Share it privately and ask them to change it after signing in.`);
-    await loadAdminAccounts();
-  } catch (error) {
-    errorOutput.textContent = `Could not reset the password: ${error.message}`;
-    errorOutput.hidden = false;
-  } finally {
-    if (adminPasswordDialog.open) {
-      submitButton.disabled = false;
-      submitButton.textContent = "Set temporary password";
-    }
   }
 }
 
@@ -2520,7 +2592,7 @@ async function findContact(event) {
     dialog.close();
     identifierInput.value = "";
     dialogError.hidden = true;
-    renderProfile(person);
+    await openChat(person.phone);
   } catch (error) {
     dialogError.textContent = error.message;
     dialogError.hidden = false;
@@ -2616,16 +2688,6 @@ async function initialize() {
   $("#loginTab").addEventListener("click", () => setAuthMode("login"));
   $("#createTab").addEventListener("click", () => setAuthMode("create"));
   authForm.addEventListener("submit", handleAuthentication);
-  $("#adminPasswordForm").addEventListener("submit", (event) => void resetAccountPassword(event));
-  $("#cancelAdminPasswordReset").addEventListener("click", () => adminPasswordDialog.close());
-  adminPasswordDialog.addEventListener("close", () => {
-    $("#adminPasswordForm").reset();
-    $("#adminPasswordError").hidden = true;
-    pendingPasswordResetAccount = null;
-  });
-  adminPasswordDialog.addEventListener("click", (event) => {
-    if (event.target === adminPasswordDialog) adminPasswordDialog.close();
-  });
   phoneInput.addEventListener("input", () => { phoneInput.value = normalizePhoneNumber(phoneInput.value); });
   emailInput.addEventListener("blur", () => { emailInput.value = emailInput.value.trim().toLowerCase(); });
   $("#forgotPasswordButton").addEventListener("click", () => void sendPasswordReset());
