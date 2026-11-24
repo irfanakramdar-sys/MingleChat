@@ -41,6 +41,21 @@ Passwords are handled by Supabase Auth, not saved in website files. Messages are
 
 Existing Supabase accounts and messages are kept by the schema migration. Accounts and messages stored only in the old self-hosted server are not migrated automatically.
 
+## Owner account management
+
+1. Create the owner account through Mingle's **Create account** tab using the intended owner email, the name `MChat Admin`, and the unique 10-digit mobile number `1000000000`. Enter the password directly in the sign-up form; never place it in source files, SQL migrations, or the APK. Confirm the email first if Supabase email confirmation is enabled.
+2. In the Supabase SQL Editor, grant the server-controlled owner role to that existing account:
+
+   ```sql
+   update auth.users
+   set raw_app_meta_data = coalesce(raw_app_meta_data, '{}'::jsonb) || '{"role":"owner"}'::jsonb
+   where lower(email) = lower('admin1@gmail.com')
+   returning id, email;
+   ```
+
+   Check that exactly one row is returned, then sign out of Mingle and sign back in. The owner role is stored in Supabase `app_metadata`, which users cannot grant themselves from the browser.
+3. The owner can open **Settings → Owner tools** to review accounts. Deleting an account requires a confirmation dialog and typing its email. It permanently removes that account, its direct chats/messages, community data it owns, and its related uploaded media. The active owner and other owner accounts cannot be deleted. Apply the latest `supabase/schema.sql` to the project before using these controls.
+
 ## Build locally
 
 Install Node.js 22 or later, set the Supabase values above, and run these commands from this folder:

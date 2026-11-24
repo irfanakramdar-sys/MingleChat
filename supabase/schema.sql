@@ -181,6 +181,16 @@
   create index if not exists push_subscriptions_user_idx
     on public.push_subscriptions (user_id);
 
+  create table if not exists public.admin_media_cleanup (
+    owner_id uuid not null references auth.users (id) on delete cascade,
+    target_user_id uuid not null references auth.users (id) on delete cascade,
+    storage_path text not null,
+    created_at timestamptz not null default now(),
+    primary key (owner_id, target_user_id, storage_path)
+  );
+  alter table public.admin_media_cleanup enable row level security;
+  revoke all on public.admin_media_cleanup from anon, authenticated;
+
   insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
   values (
     'mingle-chat-media',
@@ -415,6 +425,44 @@
     using (
       bucket_id = 'mingle-chat-media'
       and (storage.foldername(storage.objects.name))[1] = (select auth.uid())::text
+    );
+
+  create or replace function public.is_mingle_owner()
+  returns boolean
+  language sql
+  stable
+  security definer
+  set search_path = ''
+  as $$
+    select auth.uid() is not null and exists (
+      select 1
+      from auth.users as account
+      where account.id = auth.uid()
+        and account.raw_app_meta_data ->> 'role' = 'owner'
+    );
+  $$;
+
+  create or replace function public.can_delete_staged_account_media(p_storage_path text)
+  returns boolean
+  language sql
+  stable
+  security definer
+  set search_path = ''
+  as $$
+    select public.is_mingle_owner() and exists (
+      select 1
+      from public.admin_media_cleanup as cleanup
+      where cleanup.owner_id = auth.uid()
+        and cleanup.storage_path = p_storage_path
+    );
+  $$;
+
+  drop policy if exists "Owners can remove staged account media" on storage.objects;
+  create policy "Owners can remove staged account media"
+    on storage.objects for delete to authenticated
+    using (
+      bucket_id = 'mingle-chat-media'
+      and public.can_delete_staged_account_media(storage.objects.name)
     );
 
   create or replace function public.handle_new_user()
@@ -935,6 +983,166 @@
     end if;
   end;
   $$;
+
+  create or replace function public.account_media_paths(p_user_id uuid)
+  returns table(storage_path text)
+  language sql
+  stable
+  security definer
+  set search_path = ''
+  as $$
+    select distinct object.name
+    from storage.objects as object
+    where object.bucket_id = 'mingle-chat-media'
+      and (
+        (storage.foldername(object.name))[1] = p_user_id::text
+        or exists (
+          select 1
+          from public.messages as message
+          where message.attachment_path = object.name
+            and (message.sender_id = p_user_id or message.recipient_id = p_user_id)
+        )
+        or exists (
+          select 1
+          from public.group_messages as message
+          join public.community_groups as group_chat on group_chat.id = message.group_id
+          join public.communities as community on community.id = group_chat.community_id
+          where message.attachment_path = object.name
+            and (
+              message.sender_id = p_user_id
+              or group_chat.created_by = p_user_id
+              or community.created_by = p_user_id
+            )
+        )
+      );
+  $$;
+
+  create or replace function public.admin_list_accounts()
+  returns table(id uuid, name text, phone text, email text, created_at timestamptz, is_owner boolean)
+  language plpgsql
+  security definer
+  set search_path = ''
+  as $$
+  begin
+    if not public.is_mingle_owner() then
+      raise exception 'Only the Mingle owner can manage accounts.';
+    end if;
+
+    return query
+      select profile.id,
+             profile.name,
+             profile.phone,
+             coalesce(profile.email, account.email)::text,
+             profile.created_at,
+             coalesce(account.raw_app_meta_data ->> 'role', '') = 'owner'
+      from public.profiles as profile
+      join auth.users as account on account.id = profile.id
+      order by profile.created_at desc;
+  end;
+  $$;
+
+  create or replace function public.admin_prepare_account_deletion(p_user_id uuid)
+  returns table(storage_path text)
+  language plpgsql
+  security definer
+  set search_path = ''
+  as $$
+  begin
+    if not public.is_mingle_owner() then
+      raise exception 'Only the Mingle owner can manage accounts.';
+    end if;
+    if p_user_id is null or p_user_id = auth.uid() then
+      raise exception 'You cannot delete your own account.';
+    end if;
+    if not exists (select 1 from auth.users as account where account.id = p_user_id) then
+      raise exception 'That account no longer exists.';
+    end if;
+    if exists (
+      select 1 from auth.users as account
+      where account.id = p_user_id
+        and account.raw_app_meta_data ->> 'role' = 'owner'
+    ) then
+      raise exception 'Another owner account cannot be deleted.';
+    end if;
+
+    delete from public.admin_media_cleanup as cleanup
+    where cleanup.owner_id = auth.uid()
+      and cleanup.target_user_id = p_user_id;
+
+    insert into public.admin_media_cleanup (owner_id, target_user_id, storage_path)
+    select auth.uid(), p_user_id, media.storage_path
+    from public.account_media_paths(p_user_id) as media
+    on conflict do nothing;
+
+    return query
+      select cleanup.storage_path
+      from public.admin_media_cleanup as cleanup
+      join storage.objects as object
+        on object.name = cleanup.storage_path
+       and object.bucket_id = 'mingle-chat-media'
+      where cleanup.owner_id = auth.uid()
+        and cleanup.target_user_id = p_user_id
+      order by cleanup.storage_path;
+  end;
+  $$;
+
+  create or replace function public.admin_delete_account(p_user_id uuid)
+  returns void
+  language plpgsql
+  security definer
+  set search_path = ''
+  as $$
+  begin
+    if not public.is_mingle_owner() then
+      raise exception 'Only the Mingle owner can manage accounts.';
+    end if;
+    if p_user_id is null or p_user_id = auth.uid() then
+      raise exception 'You cannot delete your own account.';
+    end if;
+    if not exists (select 1 from auth.users as account where account.id = p_user_id) then
+      raise exception 'That account no longer exists.';
+    end if;
+    if exists (
+      select 1 from auth.users as account
+      where account.id = p_user_id
+        and account.raw_app_meta_data ->> 'role' = 'owner'
+    ) then
+      raise exception 'Another owner account cannot be deleted.';
+    end if;
+    if exists (
+      select 1
+      from public.account_media_paths(p_user_id) as media
+      join storage.objects as object
+        on object.name = media.storage_path
+       and object.bucket_id = 'mingle-chat-media'
+    ) then
+      raise exception 'Remove this account chat media before deleting the account.';
+    end if;
+
+    delete from auth.users as account
+    where account.id = p_user_id
+      and coalesce(account.raw_app_meta_data ->> 'role', '') <> 'owner';
+    if not found then
+      raise exception 'The account could not be deleted.';
+    end if;
+
+    delete from public.admin_media_cleanup as cleanup
+    where cleanup.owner_id = auth.uid()
+      and cleanup.target_user_id = p_user_id;
+  end;
+  $$;
+
+  revoke all on function public.is_mingle_owner() from public, anon;
+  revoke all on function public.can_delete_staged_account_media(text) from public, anon;
+  revoke all on function public.account_media_paths(uuid) from public, anon, authenticated;
+  revoke all on function public.admin_list_accounts() from public, anon;
+  revoke all on function public.admin_prepare_account_deletion(uuid) from public, anon;
+  revoke all on function public.admin_delete_account(uuid) from public, anon;
+  grant execute on function public.is_mingle_owner() to authenticated;
+  grant execute on function public.can_delete_staged_account_media(text) to authenticated;
+  grant execute on function public.admin_list_accounts() to authenticated;
+  grant execute on function public.admin_prepare_account_deletion(uuid) to authenticated;
+  grant execute on function public.admin_delete_account(uuid) to authenticated;
 
   revoke all on function public.ensure_my_profile() from public, anon;
   revoke all on function public.handle_new_user() from public, anon, authenticated;

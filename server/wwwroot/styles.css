@@ -199,6 +199,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visib
 .settings-back { display: inline-grid; }
 .notification-button, .danger-button { width: 100%; margin-top: 12px; padding: 12px; border: 1px solid #dfe9e1; border-radius: 10px; background: #f7faf7; color: #366c50; font-size: 12px; font-weight: 700; text-align: left; }
 .danger-button { margin-top: 18px; border-color: #f0dfdd; background: #fff8f7; color: #aa4842; }
+.admin-account-list { display: grid; gap: 8px; }
+.admin-account-row { display: flex; align-items: center; gap: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 11px; background: #fff; }
+.admin-account-copy { min-width: 0; flex: 1; }
+.admin-account-copy strong, .admin-account-copy small { display: block; overflow-wrap: anywhere; }
+.admin-account-copy strong { color: #29382f; font-size: 12px; }
+.admin-account-copy small { margin-top: 4px; color: #78867d; font-size: 11px; line-height: 1.5; }
+.admin-delete-button { width: auto; flex: 0 0 auto; margin: 0; }
+.admin-delete-button:disabled { cursor: not-allowed; opacity: .65; }
 .toast { position: fixed; right: 20px; bottom: max(20px, env(safe-area-inset-bottom)); z-index: 4; width: min(360px, calc(100vw - 32px)); padding: 14px 16px; border: 1px solid #dfebe1; border-radius: 13px; background: white; color: #314238; box-shadow: 0 12px 36px #152b1d22; font-size: 13px; line-height: 1.55; }
 .toast button { margin-left: 9px; border: 0; background: transparent; color: var(--green); font-weight: 700; }
 [data-theme="dark"] { color-scheme: dark; --line: #2b3a31; --muted: #9bab9f; background: #111a15; color: #e4ede6; }
@@ -211,6 +219,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visib
 [data-theme="dark"] .conversation-search input { border-color: var(--line); background: #111a15; color: #e4ede6; }
 [data-theme="dark"] .panel, [data-theme="dark"] .messages { background-color: #111a15; }
 [data-theme="dark"] .settings-row-copy strong, [data-theme="dark"] .settings-info-card strong, [data-theme="dark"] .settings-option-group h3, [data-theme="dark"] .settings-toggle strong, [data-theme="dark"] .profile-name, [data-theme="dark"] .person-name { color: #e4ede6; }
+[data-theme="dark"] .admin-account-row { background: #17221b; }
+[data-theme="dark"] .admin-account-copy strong { color: #e4ede6; }
 [data-theme="dark"] .settings-choice, [data-theme="dark"] .wallpaper-choice { background: #1c2a21; color: #d7e3da; }
 dialog { width: min(400px, calc(100% - 28px)); padding: 23px; border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 20px 80px #10221835; }
 dialog::backdrop { background: #10221880; }
@@ -237,10 +247,11 @@ dialog > form > p { margin: 8px 0 16px; color: #7f8b83; font-size: 12px; line-he
 .text-button:disabled { opacity: .6; }
 .feedback.success { color: #27724b; }
 @media (max-width: 680px) {
+  .auth-screen { align-content: start; padding: max(20px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(20px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); }
   .auth-card { padding: 27px 22px; }
   .conversation-actions .chat-action-button { display: none; }
-  .app-shell { min-height: 0; padding: 0; }
-  .messenger { grid-template-columns: 1fr; border: 0; border-radius: 0; box-shadow: none; }
+  .app-shell { min-height: 0; padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left); }
+  .messenger { min-height: 0; grid-template-columns: 1fr; border: 0; border-radius: 0; box-shadow: none; }
   .panel { display: none; }
   .messenger.show-chat .sidebar, .messenger.show-page .sidebar { display: none; }
   .messenger.show-chat .panel, .messenger.show-page .panel { display: flex; }
@@ -257,4 +268,7 @@ dialog > form > p { margin: 8px 0 16px; color: #7f8b83; font-size: 12px; line-he
   .attachment-preview { max-width: 55px; font-size: 9px; }
   .message-audio { min-width: min(230px, calc(100vw - 90px)); }
   .profile-content { padding-top: 20px; }
+}
+@media (max-height: 620px) and (min-width: 681px) {
+  .app-shell { min-height: 0; padding: 12px; }
 }

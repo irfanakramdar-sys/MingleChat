@@ -36,6 +36,7 @@ const settingsSections = [
 
 let authMode = "login";
 let profile = null;
+let isOwner = false;
 let chats = [];
 let currentPeer = null;
 let currentGroup = null;
@@ -354,6 +355,10 @@ function setAuthMode(mode) {
   passwordInput.value = "";
   authError.hidden = true;
   $("#existingAccountActions").hidden = true;
+}
+
+function normalizePhoneNumber(value) {
+  return value.replace(/\D/g, "").slice(0, 10);
 }
 
 function updateNav(activePage) {
@@ -1244,6 +1249,7 @@ function showLogin() {
   clearInterval(refreshTimer);
   clearInterval(messageTimer);
   profile = null;
+  isOwner = false;
   currentPeer = null;
   currentGroup = null;
   communities = [];
@@ -1261,6 +1267,9 @@ function showLogin() {
 
 async function showApp(userProfile) {
   profile = userProfile;
+  const { data: userData, error: userError } = await db().auth.getUser();
+  if (userError) throw new Error(userError.message);
+  isOwner = userData.user?.app_metadata?.role === "owner";
   currentPeer = null;
   currentGroup = null;
   page = "chats";
@@ -1324,7 +1333,8 @@ async function handleAuthentication(event) {
   event.preventDefault();
   authError.hidden = true;
   const email = emailInput.value.trim().toLowerCase();
-  const phone = phoneInput.value.trim();
+  const phone = normalizePhoneNumber(phoneInput.value);
+  phoneInput.value = phone;
   const password = passwordInput.value;
   const name = displayNameInput.value.trim();
 
@@ -2095,12 +2105,15 @@ function openSettingsPage() {
 }
 
 function renderSettings() {
+  const visibleSettingsSections = isOwner
+    ? [...settingsSections, { id: "admin", icon: "♛", title: "Owner tools", description: "View accounts and permanently remove accounts" }]
+    : settingsSections;
   contentPanel.innerHTML = `<header class="conversation-header"><span class="person-name">Settings</span></header>
     <section class="settings-content" aria-label="Settings">
       <div class="settings-account-card"><span class="avatar">${escapeText(initials(profile.name))}</span>
         <div><div class="profile-name">${escapeText(profile.name)}</div><div class="profile-detail">${escapeText(profile.email || profile.phone)}</div></div>
         <button id="settingsAccountButton" class="secondary" type="button">View</button></div>
-      <div class="settings-list">${settingsSections.map((section) => `<button class="settings-row" type="button" data-settings-section="${section.id}">
+      <div class="settings-list">${visibleSettingsSections.map((section) => `<button class="settings-row" type="button" data-settings-section="${section.id}">
         <span class="settings-icon" aria-hidden="true">${section.icon}</span><span class="settings-row-copy"><strong>${section.title}</strong><small>${section.description}</small></span><span class="settings-chevron" aria-hidden="true">›</span>
       </button>`).join("")}</div>
     </section>`;
@@ -2110,26 +2123,36 @@ function renderSettings() {
       const { settingsSection } = button.dataset;
       if (settingsSection === "account") renderProfile(profile);
       else if (settingsSection === "invite") void inviteFriend();
+      else if (settingsSection === "admin" && isOwner) renderSettingsSection("admin");
       else renderSettingsSection(settingsSection);
     });
   });
 }
 
 function renderSettingsSection(section) {
+  if (section === "admin" && !isOwner) {
+    showToast("Only the Mingle owner can open these controls.");
+    openSettingsPage();
+    return;
+  }
   page = `settings-${section}`;
   const labels = {
     privacy: "Privacy",
     chats: "Chats",
     notifications: "Notifications",
     storage: "Storage and data",
-    help: "Help"
+    help: "Help",
+    admin: "Owner tools"
   };
   const heading = labels[section];
   if (!heading) {
     openSettingsPage();
     return;
   }
-  const body = section === "privacy"
+  const body = section === "admin"
+    ? `<div class="settings-info-card"><strong>Permanent account deletion</strong><p>Deleting an account permanently removes its profile, direct chats, messages, community data and uploaded media. This cannot be undone. Your own account and other owners are protected.</p><button id="refreshAdminAccounts" class="notification-button" type="button">Refresh account list</button></div>
+       <div id="adminAccountList" class="admin-account-list" aria-live="polite"><p class="settings-help">Loading accounts…</p></div>`
+    : section === "privacy"
     ? `<div class="settings-info-card"><strong>Who can find you</strong><p>Mingle users can find your account using your registered mobile number or email. These lookup options are required to start a chat.</p></div>
        <div class="settings-info-card"><strong>Chat lock</strong><p>A chat lock is saved only on this device. It is a convenience lock, not end-to-end encryption, and does not protect messages on the server.</p></div>
        <div class="settings-info-card"><strong>Message security</strong><p>Mingle messages are stored in your Supabase project and are not end-to-end encrypted. Do not send information you need to keep private from the project owner.</p></div>`
@@ -2159,7 +2182,10 @@ function renderSettingsSection(section) {
       <span class="person-name">${heading}</span>
     </header><section class="settings-content" aria-label="${heading} settings">${body}</section>`;
   $("#settingsBackButton").addEventListener("click", openSettingsPage);
-  if (section === "chats") {
+  if (section === "admin") {
+    $("#refreshAdminAccounts").addEventListener("click", () => void loadAdminAccounts());
+    void loadAdminAccounts();
+  } else if (section === "chats") {
     contentPanel.querySelectorAll("[data-theme-choice]").forEach((button) => {
       const selected = button.dataset.themeChoice === getPreference("mingle-theme", "light");
       button.classList.toggle("selected", selected);
@@ -2191,6 +2217,72 @@ function renderSettingsSection(section) {
     $("#notificationButton").addEventListener("click", () => void enableNotifications());
   } else if (section === "storage") {
     void updateStorageUsage();
+  }
+}
+
+async function loadAdminAccounts() {
+  const list = $("#adminAccountList");
+  if (!list) return;
+  if (!isOwner) {
+    list.textContent = "Only the Mingle owner can manage accounts.";
+    return;
+  }
+  list.textContent = "Loading accounts…";
+  try {
+    const { data, error } = await db().rpc("admin_list_accounts");
+    if (error) throw new Error(error.message);
+    if (!data?.length) {
+      list.textContent = "No accounts found.";
+      return;
+    }
+    list.innerHTML = data.map((account) => `<article class="admin-account-row">
+      <div class="admin-account-copy"><strong>${escapeText(account.name)}</strong>
+        <small>${escapeText(account.email || "No email")} · ${escapeText(account.phone)}</small></div>
+      <button class="danger-button admin-delete-button" type="button" data-admin-delete="${escapeText(account.id)}" ${account.is_owner ? "disabled" : ""}>${account.is_owner ? "Owner" : "Delete"}</button>
+    </article>`).join("");
+    list.querySelectorAll("[data-admin-delete]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const account = data.find((item) => item.id === button.dataset.adminDelete);
+        if (account) void deleteAccountAsOwner(account);
+      });
+    });
+  } catch (error) {
+    console.error("Could not load owner account list:", error);
+    list.textContent = `Could not load accounts: ${error.message}`;
+  }
+}
+
+async function deleteAccountAsOwner(account) {
+  if (!isOwner || account.is_owner || account.id === profile?.id || !account.email) return;
+  if (!window.confirm(`Permanently delete ${account.name} (${account.email}) and all associated chats, messages and uploaded media? This cannot be undone.`)) return;
+  const typedEmail = window.prompt(`Type ${account.email} to confirm permanent deletion.`);
+  if (typedEmail === null) return;
+  if (typedEmail.trim().toLowerCase() !== account.email.trim().toLowerCase()) {
+    showToast("The email did not match. The account was not deleted.");
+    return;
+  }
+
+  let mediaCleanupStarted = false;
+  try {
+    const { data: media, error: prepareError } = await db().rpc("admin_prepare_account_deletion", {
+      p_user_id: account.id
+    });
+    if (prepareError) throw new Error(prepareError.message);
+    const paths = (media || []).map((item) => item.storage_path);
+    for (let index = 0; index < paths.length; index += 100) {
+      mediaCleanupStarted = true;
+      const { error: storageError } = await db().storage.from(MEDIA_BUCKET).remove(paths.slice(index, index + 100));
+      if (storageError) throw new Error(`Could not remove uploaded media: ${storageError.message}`);
+    }
+    const { error: deleteError } = await db().rpc("admin_delete_account", { p_user_id: account.id });
+    if (deleteError) throw new Error(deleteError.message);
+    showToast(`Deleted ${account.name}'s account and associated chat data.`);
+    await loadAdminAccounts();
+  } catch (error) {
+    console.error("Could not delete the selected account:", error);
+    showToast(mediaCleanupStarted
+      ? `Media cleanup may be incomplete; the account was not deleted. Retry or contact the database owner: ${error.message}`
+      : `Could not delete the account: ${error.message}`);
   }
 }
 
@@ -2452,7 +2544,7 @@ async function initialize() {
   $("#loginTab").addEventListener("click", () => setAuthMode("login"));
   $("#createTab").addEventListener("click", () => setAuthMode("create"));
   authForm.addEventListener("submit", handleAuthentication);
-  phoneInput.addEventListener("input", () => { phoneInput.value = phoneInput.value.replace(/\D/g, "").slice(0, 10); });
+  phoneInput.addEventListener("input", () => { phoneInput.value = normalizePhoneNumber(phoneInput.value); });
   emailInput.addEventListener("blur", () => { emailInput.value = emailInput.value.trim().toLowerCase(); });
   $("#forgotPasswordButton").addEventListener("click", () => void sendPasswordReset());
   $("#existingAccountLogin").addEventListener("click", logInToExistingAccount);

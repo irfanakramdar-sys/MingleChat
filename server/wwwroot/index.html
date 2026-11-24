@@ -7,7 +7,7 @@
   <meta name="description" content="Send messages, voice notes, and private group chats with Mingle.">
   <link rel="manifest" href="./manifest.json">
   <link rel="icon" href="./icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./styles.css?v=20261123-4">
+  <link rel="stylesheet" href="./styles.css?v=20261124-1">
   <title>Mingle Chat</title>
 </head>
 <body>
@@ -36,7 +36,7 @@
         </div>
         <div id="phoneField" class="field" hidden>
           <label for="phoneNumber">Mobile number</label>
-          <input id="phoneNumber" type="tel" inputmode="numeric" autocomplete="tel-national" maxlength="10" pattern="[0-9]{10}" placeholder="Enter 10 digits" required>
+          <input id="phoneNumber" type="tel" inputmode="numeric" autocomplete="tel-national" maxlength="24" enterkeyhint="next" pattern="[0-9]{10}" placeholder="Enter 10 digits without country code" required>
         </div>
         <div class="field">
           <label for="password">Password</label>
@@ -121,6 +121,6 @@
     </section>
   </dialog>
 
-  <script type="module" src="./app.js?v=20261123-4"></script>
+  <script type="module" src="./app.js?v=20261124-1"></script>
 </body>
 </html>
