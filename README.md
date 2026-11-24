@@ -54,7 +54,17 @@ Existing Supabase accounts and messages are kept by the schema migration. Accoun
    ```
 
    Check that exactly one row is returned, then sign out of Mingle and sign back in. The owner role is stored in Supabase `app_metadata`, which users cannot grant themselves from the browser.
-3. The owner can open **Settings → Owner tools** to review accounts. Deleting an account requires a confirmation dialog and typing its email. It permanently removes that account, its direct chats/messages, community data it owns, and its related uploaded media. The active owner and other owner accounts cannot be deleted. Apply the latest `supabase/schema.sql` to the project before using these controls.
+3. The owner can open **Settings → Owner tools** to review accounts. Use **Reset password** to set a temporary password for an account that has no recovery email; share it privately and have the account owner change it after signing in. The existing password is never shown. This action is performed by a Supabase Edge Function, not by exposing an admin key in the website.
+4. To enable owner password resets, deploy the function from the project folder after linking the Supabase project:
+
+   ```powershell
+   npx supabase login
+   npx supabase link --project-ref zgbrpbbaherozfdfzxqh
+   npx supabase functions deploy admin-reset-password
+   ```
+
+   Supabase keeps the service-role key in the function's server environment. Never add that key to website files or share it. The static website deployment does not deploy Edge Functions.
+5. Deleting an account permanently removes that account, its direct chats/messages, community data it owns, and its related uploaded media. Deletion requires confirmation and typing the account email. The active owner and other owner accounts cannot be deleted.
 
 ## Build locally
 

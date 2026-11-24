@@ -20,6 +20,7 @@ const identifierInput = $("#identifierInput");
 const dialogError = $("#dialogError");
 const toast = $("#toast");
 const callDialog = $("#callDialog");
+const adminPasswordDialog = $("#adminPasswordDialog");
 const MAX_IMAGE_SIZE = 10 * 1024 * 1024;
 const MAX_VIDEO_SIZE = 25 * 1024 * 1024;
 const MAX_VOICE_SIZE = 25 * 1024 * 1024;
@@ -37,6 +38,7 @@ const settingsSections = [
 let authMode = "login";
 let profile = null;
 let isOwner = false;
+let pendingPasswordResetAccount = null;
 let chats = [];
 let currentPeer = null;
 let currentGroup = null;
@@ -2151,6 +2153,7 @@ function renderSettingsSection(section) {
   }
   const body = section === "admin"
     ? `<div class="settings-info-card"><strong>Permanent account deletion</strong><p>Deleting an account permanently removes its profile, direct chats, messages, community data and uploaded media. This cannot be undone. Your own account and other owners are protected.</p><button id="refreshAdminAccounts" class="notification-button" type="button">Refresh account list</button></div>
+       <div class="settings-info-card"><strong>Forgotten passwords</strong><p>Choose Reset password for an account to set a temporary password, even if it has no recovery email. The previous password cannot be viewed. Share the temporary password privately and ask the account owner to change it after signing in.</p></div>
        <div id="adminAccountList" class="admin-account-list" aria-live="polite"><p class="settings-help">Loading accounts…</p></div>`
     : section === "privacy"
     ? `<div class="settings-info-card"><strong>Who can find you</strong><p>Mingle users can find your account using your registered mobile number or email. These lookup options are required to start a chat.</p></div>
@@ -2238,8 +2241,17 @@ async function loadAdminAccounts() {
     list.innerHTML = data.map((account) => `<article class="admin-account-row">
       <div class="admin-account-copy"><strong>${escapeText(account.name)}</strong>
         <small>${escapeText(account.email || "No email")} · ${escapeText(account.phone)}</small></div>
-      <button class="danger-button admin-delete-button" type="button" data-admin-delete="${escapeText(account.id)}" ${account.is_owner ? "disabled" : ""}>${account.is_owner ? "Owner" : "Delete"}</button>
+      <div class="admin-account-actions">
+        <button class="secondary admin-reset-button" type="button" data-admin-reset="${escapeText(account.id)}" ${account.is_owner || account.id === profile?.id ? "disabled" : ""}>Reset password</button>
+        <button class="danger-button admin-delete-button" type="button" data-admin-delete="${escapeText(account.id)}" ${account.is_owner || account.id === profile?.id ? "disabled" : ""}>${account.is_owner ? "Owner" : "Delete"}</button>
+      </div>
     </article>`).join("");
+    list.querySelectorAll("[data-admin-reset]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const account = data.find((item) => item.id === button.dataset.adminReset);
+        if (account) openAdminPasswordReset(account);
+      });
+    });
     list.querySelectorAll("[data-admin-delete]").forEach((button) => {
       button.addEventListener("click", () => {
         const account = data.find((item) => item.id === button.dataset.adminDelete);
@@ -2249,6 +2261,66 @@ async function loadAdminAccounts() {
   } catch (error) {
     console.error("Could not load owner account list:", error);
     list.textContent = `Could not load accounts: ${error.message}`;
+  }
+}
+
+function openAdminPasswordReset(account) {
+  if (!isOwner || account.is_owner || account.id === profile?.id) return;
+  pendingPasswordResetAccount = account;
+  $("#adminPasswordAccount").textContent = `${account.name} (${account.email || account.phone})`;
+  $("#adminPasswordForm").reset();
+  $("#adminPasswordError").hidden = true;
+  $("#adminPasswordSubmit").disabled = false;
+  $("#adminPasswordSubmit").textContent = "Set temporary password";
+  adminPasswordDialog.showModal();
+  $("#adminTemporaryPassword").focus();
+}
+
+async function resetAccountPassword(event) {
+  event.preventDefault();
+  const account = pendingPasswordResetAccount;
+  const newPassword = $("#adminTemporaryPassword").value;
+  const confirmPassword = $("#adminTemporaryPasswordConfirm").value;
+  const errorOutput = $("#adminPasswordError");
+  if (!isOwner || !account || account.is_owner || account.id === profile?.id) {
+    errorOutput.textContent = "Only the Mingle owner can reset a non-owner account password.";
+    errorOutput.hidden = false;
+    return;
+  }
+  if (newPassword !== confirmPassword) {
+    errorOutput.textContent = "The passwords do not match.";
+    errorOutput.hidden = false;
+    $("#adminTemporaryPasswordConfirm").focus();
+    return;
+  }
+
+  const submitButton = $("#adminPasswordSubmit");
+  submitButton.disabled = true;
+  submitButton.textContent = "Updating password…";
+  errorOutput.hidden = true;
+  try {
+    const { error } = await db().functions.invoke("admin-reset-password", {
+      body: { userId: account.id, password: newPassword }
+    });
+    if (error) {
+      let message = error.message;
+      if (error.context && typeof error.context.json === "function") {
+        const response = await error.context.json();
+        if (typeof response?.error === "string") message = response.error;
+      }
+      throw new Error(message);
+    }
+    adminPasswordDialog.close();
+    showToast(`Temporary password set for ${account.name}. Share it privately and ask them to change it after signing in.`);
+    await loadAdminAccounts();
+  } catch (error) {
+    errorOutput.textContent = `Could not reset the password: ${error.message}`;
+    errorOutput.hidden = false;
+  } finally {
+    if (adminPasswordDialog.open) {
+      submitButton.disabled = false;
+      submitButton.textContent = "Set temporary password";
+    }
   }
 }
 
@@ -2544,6 +2616,16 @@ async function initialize() {
   $("#loginTab").addEventListener("click", () => setAuthMode("login"));
   $("#createTab").addEventListener("click", () => setAuthMode("create"));
   authForm.addEventListener("submit", handleAuthentication);
+  $("#adminPasswordForm").addEventListener("submit", (event) => void resetAccountPassword(event));
+  $("#cancelAdminPasswordReset").addEventListener("click", () => adminPasswordDialog.close());
+  adminPasswordDialog.addEventListener("close", () => {
+    $("#adminPasswordForm").reset();
+    $("#adminPasswordError").hidden = true;
+    pendingPasswordResetAccount = null;
+  });
+  adminPasswordDialog.addEventListener("click", (event) => {
+    if (event.target === adminPasswordDialog) adminPasswordDialog.close();
+  });
   phoneInput.addEventListener("input", () => { phoneInput.value = normalizePhoneNumber(phoneInput.value); });
   emailInput.addEventListener("blur", () => { emailInput.value = emailInput.value.trim().toLowerCase(); });
   $("#forgotPasswordButton").addEventListener("click", () => void sendPasswordReset());

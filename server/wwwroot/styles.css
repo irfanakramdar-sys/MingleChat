@@ -205,8 +205,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visib
 .admin-account-copy strong, .admin-account-copy small { display: block; overflow-wrap: anywhere; }
 .admin-account-copy strong { color: #29382f; font-size: 12px; }
 .admin-account-copy small { margin-top: 4px; color: #78867d; font-size: 11px; line-height: 1.5; }
-.admin-delete-button { width: auto; flex: 0 0 auto; margin: 0; }
-.admin-delete-button:disabled { cursor: not-allowed; opacity: .65; }
+.admin-account-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 7px; }
+.admin-account-actions .secondary, .admin-account-actions .danger-button { min-height: 36px; margin: 0; padding: 8px; font-size: 11px; text-align: center; }
+.admin-account-actions .danger-button { width: auto; }
+.admin-account-actions button:disabled { cursor: not-allowed; opacity: .65; }
 .toast { position: fixed; right: 20px; bottom: max(20px, env(safe-area-inset-bottom)); z-index: 4; width: min(360px, calc(100vw - 32px)); padding: 14px 16px; border: 1px solid #dfebe1; border-radius: 13px; background: white; color: #314238; box-shadow: 0 12px 36px #152b1d22; font-size: 13px; line-height: 1.55; }
 .toast button { margin-left: 9px; border: 0; background: transparent; color: var(--green); font-weight: 700; }
 [data-theme="dark"] { color-scheme: dark; --line: #2b3a31; --muted: #9bab9f; background: #111a15; color: #e4ede6; }
@@ -221,6 +223,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visib
 [data-theme="dark"] .settings-row-copy strong, [data-theme="dark"] .settings-info-card strong, [data-theme="dark"] .settings-option-group h3, [data-theme="dark"] .settings-toggle strong, [data-theme="dark"] .profile-name, [data-theme="dark"] .person-name { color: #e4ede6; }
 [data-theme="dark"] .admin-account-row { background: #17221b; }
 [data-theme="dark"] .admin-account-copy strong { color: #e4ede6; }
+[data-theme="dark"] #adminPasswordDialog { border-color: var(--line); background: #17221b; color: #e4ede6; }
+[data-theme="dark"] #adminPasswordDialog .field label { color: #d7e3da; }
+[data-theme="dark"] #adminPasswordDialog .dialog-input { border-color: var(--line); background: #111a15; color: #e4ede6; }
+[data-theme="dark"] #adminPasswordDialog .secondary { background: #1c2a21; color: #d7e3da; }
 [data-theme="dark"] .settings-choice, [data-theme="dark"] .wallpaper-choice { background: #1c2a21; color: #d7e3da; }
 dialog { width: min(400px, calc(100% - 28px)); padding: 23px; border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 20px 80px #10221835; }
 dialog::backdrop { background: #10221880; }
@@ -240,6 +246,8 @@ dialog::backdrop { background: #10221880; }
 .call-end-button { background: #dc4545; }
 dialog h2 { margin: 0; font-size: 19px; }
 dialog > form > p { margin: 8px 0 16px; color: #7f8b83; font-size: 12px; line-height: 1.6; }
+#adminPasswordForm { display: grid; gap: 12px; }
+#adminPasswordForm > p { margin: 0; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 15px; }
 .secondary { min-height: 40px; padding: 0 13px; border: 1px solid var(--line); border-radius: 9px; background: white; color: #59665d; font-size: 12px; font-weight: 650; }
 .dialog-actions .primary { min-height: 40px; padding: 0 15px; font-size: 12px; }
@@ -268,6 +276,9 @@ dialog > form > p { margin: 8px 0 16px; color: #7f8b83; font-size: 12px; line-he
   .attachment-preview { max-width: 55px; font-size: 9px; }
   .message-audio { min-width: min(230px, calc(100vw - 90px)); }
   .profile-content { padding-top: 20px; }
+  .admin-account-row { flex-wrap: wrap; }
+  .admin-account-actions { width: 100%; }
+  .admin-account-actions button { min-width: 0; flex: 1 1 0; }
 }
 @media (max-height: 620px) and (min-width: 681px) {
   .app-shell { min-height: 0; padding: 12px; }

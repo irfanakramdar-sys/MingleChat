@@ -7,7 +7,7 @@
   <meta name="description" content="Send messages, voice notes, and private group chats with Mingle.">
   <link rel="manifest" href="./manifest.json">
   <link rel="icon" href="./icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./styles.css?v=20261124-1">
+  <link rel="stylesheet" href="./styles.css?v=20261124-2">
   <title>Mingle Chat</title>
 </head>
 <body>
@@ -121,6 +121,27 @@
     </section>
   </dialog>
 
-  <script type="module" src="./app.js?v=20261124-1"></script>
+  <dialog id="adminPasswordDialog" aria-labelledby="adminPasswordTitle">
+    <form id="adminPasswordForm">
+      <h2 id="adminPasswordTitle">Set a temporary password</h2>
+      <p>Account: <strong id="adminPasswordAccount"></strong></p>
+      <p>The existing password cannot be viewed. Choose a new password with at least 8 characters and share it privately with the account owner.</p>
+      <div class="field">
+        <label for="adminTemporaryPassword">New temporary password</label>
+        <input id="adminTemporaryPassword" class="dialog-input" type="password" autocomplete="new-password" minlength="8" maxlength="72" required>
+      </div>
+      <div class="field password-confirm-field">
+        <label for="adminTemporaryPasswordConfirm">Confirm temporary password</label>
+        <input id="adminTemporaryPasswordConfirm" class="dialog-input" type="password" autocomplete="new-password" minlength="8" maxlength="72" required>
+      </div>
+      <p id="adminPasswordError" class="feedback error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button id="cancelAdminPasswordReset" class="secondary" type="button">Cancel</button>
+        <button id="adminPasswordSubmit" class="primary" type="submit">Set temporary password</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script type="module" src="./app.js?v=20261124-2"></script>
 </body>
 </html>
