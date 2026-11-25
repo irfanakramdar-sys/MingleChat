@@ -85,9 +85,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visib
 .group-row .avatar { width: 36px; height: 36px; font-size: 11px; }
 .group-row .row-preview { margin-top: 3px; }
 .empty-community { margin: 0; padding: 5px 8px 9px; color: #829087; font-size: 11px; }
-.nav { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 8px 10px max(9px, env(safe-area-inset-bottom)); border-top: 1px solid var(--line); }
-.nav-button { min-height: 47px; display: flex; justify-content: center; align-items: center; gap: 8px; border: 0; border-radius: 11px; background: transparent; color: #7e8d83; font-size: 12px; font-weight: 650; }
-.nav-button > span { font-size: 17px; }
+.nav { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 3px; padding: 8px 7px max(9px, env(safe-area-inset-bottom)); border-top: 1px solid var(--line); }
+.nav-button { min-width: 0; min-height: 47px; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 3px; border: 0; border-radius: 11px; background: transparent; color: #7e8d83; font-size: 10px; font-weight: 650; }
+.nav-button > span { font-size: 16px; line-height: 1; }
 .nav-button.active { background: #eff6f0; color: var(--green); }
 .panel { display: flex; min-width: 0; min-height: 0; flex-direction: column; background: #fbfcfa; }
 .welcome { flex: 1; display: grid; align-content: center; justify-items: center; padding: 26px; text-align: center; }
@@ -158,6 +158,25 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visib
 .profile-content h2 { margin: 0 0 6px; font-size: 21px; }
 .profile-card { display: flex; align-items: center; gap: 13px; margin-top: 19px; padding: 15px; border: 1px solid var(--line); border-radius: 13px; background: white; }
 .profile-card .avatar { width: 49px; height: 49px; font-size: 15px; }
+.profile-avatar-image { object-fit: cover; }
+.status-composer { display: grid; gap: 10px; margin-bottom: 14px; padding: 15px; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
+.status-composer textarea { min-height: 76px; resize: vertical; padding: 11px; border: 1px solid #e1e8e2; border-radius: 9px; color: inherit; }
+.status-composer .notification-button { margin: 0; cursor: pointer; }
+.status-composer .primary { padding: 0 14px; }
+.status-card { overflow: hidden; }
+.status-card p { overflow-wrap: anywhere; }
+.status-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px; }
+.status-heading strong { color: #29382f; font-size: 12px; }
+.status-heading time { color: #829087; font-size: 10px; }
+.status-image { display: block; width: min(100%, 520px); max-height: 420px; margin-top: 10px; border-radius: 10px; object-fit: contain; background: #f0f3f0; }
+.channel-post-list { margin-top: 15px; }
+.channel-directory { display: none; }
+.channel-directory-card { width: min(440px, calc(100% - 32px)); display: grid; gap: 5px; margin: 0 auto 8px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: #fff; color: inherit; text-align: left; }
+.channel-directory-card strong { font-size: 13px; }
+.channel-directory-card span { color: #78867d; font-size: 11px; }
+.channel-directory-card small { color: var(--green); font-size: 10px; }
+.saved-message-composer { flex: 0 0 auto; margin: 8px 12px max(8px, env(safe-area-inset-bottom)); }
+.saved-message { white-space: pre-wrap; }
 .profile-name { color: #29382f; font-size: 14px; font-weight: 700; }
 .profile-detail { margin-top: 5px; color: #78867d; font-size: 12px; }
 .profile-label { margin-top: 18px; color: #77847c; font-size: 10px; font-weight: 750; letter-spacing: .7px; text-transform: uppercase; }
@@ -278,6 +297,7 @@ dialog > form > p { margin: 8px 0 16px; color: #7f8b83; font-size: 12px; line-he
   .attachment-preview { max-width: 55px; font-size: 9px; }
   .message-audio { min-width: min(230px, calc(100vw - 90px)); }
   .profile-content { padding-top: 20px; }
+  .channel-directory { display: block; width: 100%; max-height: 36vh; overflow-y: auto; padding: 0 12px 12px; }
   .admin-account-row { flex-wrap: wrap; }
   .admin-account-actions { width: 100%; }
   .admin-account-actions button { min-width: 0; flex: 1 1 0; }

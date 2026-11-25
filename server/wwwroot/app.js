@@ -32,6 +32,7 @@ const settingsSections = [
   { id: "chats", icon: "▤", title: "Chats", description: "Theme and chat wallpaper" },
   { id: "notifications", icon: "♧", title: "Notifications", description: "Message alerts and this device's permission" },
   { id: "storage", icon: "▦", title: "Storage and data", description: "Device storage and shared media limits" },
+  { id: "premium", icon: "★", title: "Premium", description: "Plans and payment availability" },
   { id: "help", icon: "?", title: "Help", description: "Setup information and Mingle details" },
   { id: "invite", icon: "↗", title: "Invite a friend", description: "Share the Mingle website" }
 ];
@@ -43,7 +44,10 @@ let pendingPasswordResetAccount = null;
 let chats = [];
 let currentPeer = null;
 let currentGroup = null;
+let currentChannel = null;
 let communities = [];
+let channels = [];
+let statuses = [];
 let currentPeerArchived = false;
 let currentPeerClearedAt = null;
 let page = "chats";
@@ -994,6 +998,8 @@ function renderChats() {
     renderGroups();
     return;
   }
+  if (page === "statuses" || page === "channels") return;
+  if (page !== "chats") return;
   chatList.replaceChildren();
   const search = $("#searchInput").value.trim().toLowerCase();
   let lockedPeers = new Set();
@@ -1007,6 +1013,12 @@ function renderChats() {
     const searchable = `${chat.name} ${chat.phone} ${chat.email || ""}${lockedPeers.has(chat.id) ? "" : ` ${chat.lastMessage || ""}`}`;
     return searchable.toLowerCase().includes(search);
   });
+  const savedMessagesButton = document.createElement("button");
+  savedMessagesButton.type = "button";
+  savedMessagesButton.className = `chat-row${page === "saved" ? " selected" : ""}`;
+  savedMessagesButton.innerHTML = `<span class="avatar">${escapeText(initials(profile.name))}</span><span class="row-copy"><span class="row-name">You</span><span class="row-preview">Saved messages · private to you</span></span>`;
+  savedMessagesButton.addEventListener("click", openSavedMessages);
+  chatList.append(savedMessagesButton);
   $("#chatCount").textContent = String(visible.length);
   $("#listTitle").textContent = archivedView ? "Archived chats" : "Messages";
   $("#archiveViewButton").textContent = archivedView ? "Back to messages" : "Archived";
@@ -1056,13 +1068,17 @@ function renderChats() {
 async function refreshGroups() {
   if (!profile) return;
   try {
-    const { data: memberships, error: membershipError } = await db()
-      .from("community_members")
-      .select("community_id,role")
-      .eq("user_id", profile.id);
+    const [{ data: memberships, error: membershipError }, { data: ownedGroups, error: ownedGroupsError }] = await Promise.all([
+      db().from("community_members").select("community_id,role").eq("user_id", profile.id),
+      db().from("community_groups").select("community_id").eq("created_by", profile.id)
+    ]);
     if (membershipError) throw new Error(membershipError.message);
+    if (ownedGroupsError) throw new Error(ownedGroupsError.message);
 
-    const communityIds = (memberships || []).map((membership) => membership.community_id);
+    const communityIds = [...new Set([
+      ...(memberships || []).map((membership) => membership.community_id),
+      ...(ownedGroups || []).map((group) => group.community_id)
+    ])];
     if (!communityIds.length) {
       communities = [];
       if (page === "groups") renderGroups();
@@ -1376,7 +1392,10 @@ function showLogin() {
   isOwner = false;
   currentPeer = null;
   currentGroup = null;
+  currentChannel = null;
   communities = [];
+  channels = [];
+  statuses = [];
   currentPeerArchived = false;
   archivedView = false;
   page = "chats";
@@ -1417,6 +1436,14 @@ async function showApp(userProfile) {
   refreshTimer = setInterval(() => {
     void refreshChats();
     void refreshGroups();
+    const statusForm = $("#statusForm");
+    if (page === "statuses"
+      && document.activeElement?.id !== "statusText"
+      && !statusForm?.querySelector("#statusText")?.value.trim()
+      && !statusForm?.querySelector("#statusImage")?.files?.length) {
+      void refreshStatuses();
+    }
+    if (page === "channels" && !currentChannel) void refreshChannels();
     void registerNativePushToken();
   }, 30000);
 
@@ -1603,6 +1630,103 @@ function renderWelcome() {
   contentPanel.innerHTML = `<div class="welcome"><div class="welcome-mark" aria-hidden="true">M</div>
     <h2>${isGroupsPage ? "Private groups & communities" : "Your conversations"}</h2>
     <p>${isGroupsPage ? "Create a community, add topic groups, and invite people by their registered Mingle number or email." : "Choose a conversation or find someone using their registered mobile number or email address."}</p></div>`;
+}
+
+function openSavedMessages() {
+  clearInterval(messageTimer);
+  currentPeer = null;
+  currentGroup = null;
+  currentChannel = null;
+  page = "saved";
+  updateNav("chats");
+  messenger.classList.remove("show-page");
+  messenger.classList.add("show-chat");
+  contentPanel.innerHTML = `<header class="conversation-header">
+      <button id="savedMessagesBackButton" class="icon-button back-button" type="button" aria-label="Back to chats">‹</button>
+      <span class="avatar">${escapeText(initials(profile.name))}</span>
+      <span class="person"><span><span class="person-name">You</span><span class="person-summary">Saved messages · only you can see these</span></span></span>
+    </header><div id="savedMessageList" class="messages" role="log" aria-label="Saved messages"></div>
+    <form id="savedMessageForm" class="status-composer saved-message-composer">
+      <label class="visually-hidden" for="savedMessageText">Write a saved message</label>
+      <textarea id="savedMessageText" maxlength="2000" placeholder="Write a note to yourself"></textarea>
+      <button class="primary" type="submit">Save note</button>
+    </form>`;
+  $("#savedMessagesBackButton").addEventListener("click", () => {
+    clearInterval(messageTimer);
+    page = "chats";
+    messenger.classList.remove("show-chat");
+    renderWelcome();
+    void refreshChats();
+  });
+  $("#savedMessageForm").addEventListener("submit", (event) => void saveSavedMessage(event));
+  void loadSavedMessages();
+  messageTimer = setInterval(() => void loadSavedMessages(), 15000);
+}
+
+async function loadSavedMessages() {
+  if (page !== "saved") return;
+  try {
+    const { data, error } = await db().from("saved_messages")
+      .select("id,text,created_at")
+      .eq("user_id", profile.id)
+      .order("created_at", { ascending: true })
+      .limit(500);
+    if (error) throw new Error(error.message);
+    if (page !== "saved") return;
+    const list = $("#savedMessageList");
+    if (!list) return;
+    list.replaceChildren();
+    if (!data?.length) {
+      list.innerHTML = `<p class="empty-list">Save private notes and messages here. They are not sent to anyone.</p>`;
+      return;
+    }
+    for (const note of data) {
+      const bubble = document.createElement("article");
+      bubble.className = "message mine saved-message";
+      const text = document.createElement("div");
+      text.textContent = note.text;
+      const meta = document.createElement("div");
+      meta.className = "message-meta";
+      meta.textContent = new Date(note.created_at).toLocaleString();
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "text-button";
+      remove.textContent = "Delete note";
+      remove.addEventListener("click", () => void deleteSavedMessage(note.id));
+      bubble.append(text, meta, remove);
+      list.append(bubble);
+    }
+    list.scrollTop = list.scrollHeight;
+  } catch (error) {
+    console.error("Could not load saved messages:", error);
+    showToast(`Could not load saved messages: ${error.message}`);
+  }
+}
+
+async function saveSavedMessage(event) {
+  event.preventDefault();
+  const input = $("#savedMessageText");
+  const text = input.value.trim();
+  if (!text) return;
+  try {
+    const { error } = await db().from("saved_messages").insert({ user_id: profile.id, text });
+    if (error) throw new Error(error.message);
+    input.value = "";
+    await loadSavedMessages();
+  } catch (error) {
+    showToast(`Could not save your note: ${error.message}`);
+  }
+}
+
+async function deleteSavedMessage(id) {
+  if (!window.confirm("Delete this saved note?")) return;
+  try {
+    const { error } = await db().from("saved_messages").delete().eq("id", id).eq("user_id", profile.id);
+    if (error) throw new Error(error.message);
+    await loadSavedMessages();
+  } catch (error) {
+    showToast(`Could not delete the saved note: ${error.message}`);
+  }
 }
 
 function composerMarkup() {
@@ -1913,6 +2037,7 @@ async function openGroup(group) {
       <button id="backButton" class="icon-button back-button" type="button" aria-label="Back to groups"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m14.5 5-7 7 7 7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
       <span class="avatar">${escapeText(initials(group.name))}</span>
       <span class="person"><span><span class="person-name">${escapeText(group.name)}</span><span class="person-summary">${escapeText(group.communityName)} · Private group</span></span></span>
+      <button id="groupAdminsButton" class="secondary" type="button">Group admins</button>
     </header>
     <div class="messages" id="messageList" role="log" aria-label="Messages in ${escapeText(group.name)}"></div>
     ${composerMarkup()}`;
@@ -1924,10 +2049,56 @@ async function openGroup(group) {
     renderWelcome();
     void refreshGroups();
   });
+  $("#groupAdminsButton").addEventListener("click", () => void manageGroupAdmins(group));
   bindComposer();
   await loadMessages();
   messageTimer = setInterval(() => void loadMessages(), 15000);
   $("#messageInput").focus();
+}
+
+async function manageGroupAdmins(group) {
+  try {
+    const { data, error } = await db().rpc("get_community_group_admins", { p_group_id: group.id });
+    if (error) throw new Error(error.message);
+    const admins = data || [];
+    const list = admins.map((admin, index) => `${index + 1}. ${admin.user_name} (${admin.role})`).join("\n");
+    const action = window.prompt(`Current group admins:\n${list || "None"}\n\nType ADD to add a community member or REMOVE to remove an admin.`);
+    if (!action) return;
+    if (action.trim().toLowerCase() === "add") {
+      const identifier = window.prompt("Enter the community member's exact 10-digit phone number or email.");
+      if (!identifier?.trim()) return;
+      const { error: addError } = await db().rpc("add_community_group_admin", {
+        p_group_id: group.id,
+        p_identifier: identifier.trim()
+      });
+      if (addError) throw new Error(addError.message);
+      showToast("Group admin added.");
+      return;
+    }
+    if (action.trim().toLowerCase() === "remove") {
+      const removable = admins.filter((admin) => admin.role !== "owner");
+      if (!removable.length) {
+        showToast("There are no removable group admins.");
+        return;
+      }
+      const selection = window.prompt(`Enter the number of the admin to remove:\n${removable.map((admin, index) => `${index + 1}. ${admin.user_name}`).join("\n")}`);
+      const selectedAdmin = removable[Number(selection) - 1];
+      if (!selectedAdmin) {
+        if (selection !== null) showToast("Choose a valid admin number.");
+        return;
+      }
+      const { error: removeError } = await db().rpc("remove_community_group_admin", {
+        p_group_id: group.id,
+        p_user_id: selectedAdmin.user_id
+      });
+      if (removeError) throw new Error(removeError.message);
+      showToast("Group admin removed.");
+      return;
+    }
+    showToast("Choose ADD or REMOVE.");
+  } catch (error) {
+    showToast(`Could not manage group admins: ${error.message}`);
+  }
 }
 
 async function loadMessages() {
@@ -2171,7 +2342,14 @@ function renderProfile(person = profile) {
   }
   const isMe = person.id === profile.id;
   const ownFields = isMe
-    ? `<div class="profile-section"><div class="profile-label">Privacy</div>
+    ? `<div class="profile-section"><div class="profile-label">Profile picture</div>
+        <p class="content-description">Choose a photo and decide who can see it.</p>
+        <label class="notification-button" for="profileAvatarInput">Choose profile picture</label>
+        <input id="profileAvatarInput" class="attachment-input" type="file" accept="image/jpeg,image/png,image/webp,image/gif">
+        <label class="profile-label" for="avatarVisibility">Photo visibility</label>
+        <select id="avatarVisibility" class="dialog-input"><option value="everyone">Everyone on Mingle</option><option value="contacts">People I have chatted with</option><option value="nobody">Only me</option></select>
+       </div>
+       <div class="profile-section"><div class="profile-label">Privacy</div>
         <p class="content-description">Your exact mobile number and email are shown to people who search for either one. Chat locks are stored on this device only and do not encrypt messages on the server.</p></div>
        <button id="profileSettingsButton" class="notification-button" type="button">Open Settings</button>
        <button id="changePasswordButton" class="notification-button" type="button">Change password</button>
@@ -2196,6 +2374,13 @@ function renderProfile(person = profile) {
     else void openChat(person.phone);
   });
   if (isMe) {
+    void loadProfileAvatar(person.id);
+    $("#profileAvatarInput").addEventListener("change", (event) => {
+      const file = event.target.files?.[0];
+      if (file) void saveProfileAvatar(file);
+    });
+    void loadAvatarVisibility();
+    $("#avatarVisibility").addEventListener("change", (event) => void updateAvatarVisibility(event.target.value));
     if (!person.email) $("#addLoginEmailButton").addEventListener("click", () => void addLoginEmail());
     $("#profileSettingsButton").addEventListener("click", openSettingsPage);
     $("#changePasswordButton").addEventListener("click", () => void changePassword());
@@ -2209,7 +2394,96 @@ function renderProfile(person = profile) {
       }
     });
   } else {
+    void loadProfileAvatar(person.id);
     $("#messageThisPerson").addEventListener("click", () => void openChat(person.phone));
+  }
+}
+
+async function loadProfileAvatar(userId) {
+  const avatar = contentPanel.querySelector(".profile-card .avatar");
+  if (!avatar) return;
+  try {
+    const { data, error } = await db().from("profile_avatars").select("storage_path").eq("user_id", userId).maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!data?.storage_path || !avatar.isConnected) return;
+    const image = document.createElement("img");
+    image.className = "avatar profile-avatar-image";
+    image.alt = "Profile picture";
+    image.src = await getSignedMediaUrl(data.storage_path);
+    if (avatar.isConnected) avatar.replaceWith(image);
+  } catch (error) {
+    console.error("Could not load profile picture:", error);
+    showToast(`Could not load profile picture: ${error.message}`);
+  }
+}
+
+async function loadAvatarVisibility() {
+  const selector = $("#avatarVisibility");
+  if (!selector) return;
+  try {
+    const { data, error } = await db().from("profile_avatars").select("visibility").eq("user_id", profile.id).maybeSingle();
+    if (error) throw new Error(error.message);
+    selector.value = data?.visibility || "everyone";
+  } catch (error) {
+    console.error("Could not load profile picture privacy:", error);
+    showToast(`Could not load profile picture privacy: ${error.message}`);
+  }
+}
+
+async function saveProfileAvatar(file) {
+  if (!file.type.startsWith("image/") || file.size > MAX_IMAGE_SIZE) {
+    showToast("Choose a supported image no larger than 10 MB.");
+    return;
+  }
+  const selector = $("#avatarVisibility");
+  if (!selector) return;
+  let uploadedPath = null;
+  let saved = false;
+  let cleanupWarning = null;
+  try {
+    const { data: previous, error: previousError } = await db().from("profile_avatars").select("storage_path").eq("user_id", profile.id).maybeSingle();
+    if (previousError) throw new Error(previousError.message);
+    uploadedPath = `${profile.id}/avatar/${crypto.randomUUID()}.${mediaExtension(file.type)}`;
+    const { error: uploadError } = await db().storage.from(MEDIA_BUCKET).upload(uploadedPath, file, { contentType: file.type, upsert: false });
+    if (uploadError) throw new Error(`Could not upload profile picture: ${uploadError.message}`);
+    const { error } = await db().rpc("set_my_avatar", { p_storage_path: uploadedPath, p_visibility: selector.value });
+    if (error) throw new Error(error.message);
+    saved = true;
+    if (previous?.storage_path) {
+      const { error: cleanupError } = await db().storage.from(MEDIA_BUCKET).remove([previous.storage_path]);
+      if (cleanupError) {
+        cleanupWarning = cleanupError.message;
+      }
+    }
+    await loadProfileAvatar(profile.id);
+    showToast(cleanupWarning
+      ? `Profile picture updated, but the previous photo could not be removed: ${cleanupWarning}`
+      : "Profile picture updated.");
+  } catch (error) {
+    if (uploadedPath && !saved) {
+      const { error: cleanupError } = await db().storage.from(MEDIA_BUCKET).remove([uploadedPath]);
+      if (cleanupError) {
+        showToast(`Could not save profile picture: ${error.message}. Uploaded photo cleanup also failed: ${cleanupError.message}`);
+        return;
+      }
+    }
+    showToast(`Could not save profile picture: ${error.message}`);
+  }
+}
+
+async function updateAvatarVisibility(visibility) {
+  try {
+    const { data, error } = await db().from("profile_avatars").select("storage_path").eq("user_id", profile.id).maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!data?.storage_path) {
+      showToast("Choose a profile picture before changing its visibility.");
+      return;
+    }
+    const { error: updateError } = await db().rpc("set_my_avatar", { p_storage_path: data.storage_path, p_visibility: visibility });
+    if (updateError) throw new Error(updateError.message);
+    showToast("Profile picture visibility updated.");
+  } catch (error) {
+    showToast(`Could not update profile picture visibility: ${error.message}`);
   }
 }
 
@@ -2298,6 +2572,7 @@ function renderSettingsSection(section) {
     chats: "Chats",
     notifications: "Notifications",
     storage: "Storage and data",
+    premium: "Premium",
     help: "Help",
     assistant: "Mingle Assistant",
     admin: "Owner tools"
@@ -2337,6 +2612,9 @@ function renderSettingsSection(section) {
         : section === "storage"
           ? `<div class="settings-info-card"><strong>Website data on this device</strong><p id="storageUsage">Checking this device's website storage…</p></div>
              <div class="settings-info-card"><strong>Chat media</strong><p>Photos and videos are stored in your private Supabase project. Photos can be up to 10 MB; videos and voice notes up to 25 MB. Supabase Free has storage and bandwidth limits.</p></div>`
+          : section === "premium"
+            ? `<div class="settings-info-card"><strong>Premium plans</strong><p>Planned prices: ₹1 for one week (Friday offer), ₹6 for five months, ₹12 for one year, or ₹40 for five years.</p></div>
+               <div class="settings-info-card"><strong>Payments are not available yet</strong><p>No payment provider or merchant verification is configured. This screen does not accept payment and does not grant premium access. Do not send money to anyone claiming to activate Premium manually.</p></div>`
           : `<div class="settings-info-card"><strong>Mingle help</strong><p>For account or setup issues, contact the person who manages your Mingle website and Supabase project.</p></div>
              <div class="settings-info-card"><strong>About Mingle</strong><p>Mingle is a community chat website. It is not affiliated with WhatsApp.</p></div>`;
 
@@ -2659,6 +2937,7 @@ function openChatsPage() {
   archivedView = false;
   currentPeer = null;
   currentGroup = null;
+  currentChannel = null;
   currentPeerArchived = false;
   clearInterval(messageTimer);
   messenger.classList.remove("show-chat", "show-page");
@@ -2677,6 +2956,7 @@ function openGroupsPage() {
   archivedView = false;
   currentPeer = null;
   currentGroup = null;
+  currentChannel = null;
   currentPeerArchived = false;
   clearInterval(messageTimer);
   messenger.classList.remove("show-chat", "show-page");
@@ -2687,6 +2967,361 @@ function openGroupsPage() {
   updateNav("groups");
   renderWelcome();
   void refreshGroups();
+}
+
+function openStatusesPage() {
+  if (mediaRecorder?.state === "recording") stopVoiceRecording(true);
+  page = "statuses";
+  currentPeer = null;
+  currentGroup = null;
+  currentChannel = null;
+  currentPeerArchived = false;
+  clearInterval(messageTimer);
+  messenger.classList.remove("show-chat");
+  messenger.classList.add("show-page");
+  $("#listTitle").textContent = "Status";
+  $("#searchInput").parentElement.hidden = true;
+  $("#archiveViewButton").hidden = true;
+  $("#newChatButton").hidden = false;
+  $("#newChatButton").title = "Post a status";
+  $("#newChatButton").setAttribute("aria-label", "Post a status");
+  updateNav("statuses");
+  renderStatuses();
+  void refreshStatuses();
+}
+
+async function refreshStatuses() {
+  if (!profile) return;
+  try {
+    const { data, error } = await db().rpc("get_active_statuses");
+    if (error) throw new Error(error.message);
+    statuses = data || [];
+    if (page === "statuses") renderStatuses();
+  } catch (error) {
+    console.error("Could not load statuses:", error);
+    showToast(`Could not load statuses: ${error.message}`);
+  }
+}
+
+function renderStatuses() {
+  if (page !== "statuses") return;
+  chatList.replaceChildren();
+  const recentStatusUsers = [...new Map(statuses.map((status) => [status.user_id, status])).values()];
+  for (const status of recentStatusUsers) {
+    const item = document.createElement("div");
+    item.className = "chat-row";
+    item.innerHTML = `<span class="avatar">${escapeText(initials(status.user_name))}</span><span class="row-copy"><span class="row-name">${escapeText(status.user_name || "Mingle user")}${status.user_id === profile.id ? " · You" : ""}</span><span class="row-preview">Status · ${escapeText(timeLabel(status.created_at))}</span></span>`;
+    chatList.append(item);
+  }
+  if (!recentStatusUsers.length) {
+    chatList.innerHTML = `<p class="empty-list">No active statuses.</p>`;
+  }
+  contentPanel.innerHTML = `<header class="conversation-header"><span class="person-name">Recent statuses</span></header>
+    <section class="settings-content"><form id="statusForm" class="status-composer">
+      <label class="profile-label" for="statusText">Share a status (visible to Mingle users for 24 hours)</label>
+      <textarea id="statusText" maxlength="700" placeholder="What's happening?"></textarea>
+      <label class="notification-button" for="statusImage">Add a photo (optional)</label>
+      <input id="statusImage" class="attachment-input" type="file" accept="image/jpeg,image/png,image/webp,image/gif">
+      <button class="primary" type="submit">Post status</button>
+    </form><div id="statusFeed" aria-live="polite"></div></section>`;
+  $("#statusForm").addEventListener("submit", (event) => void submitStatus(event));
+  const feed = $("#statusFeed");
+  if (!statuses.length) {
+    feed.innerHTML = `<p class="empty-list">No active statuses yet. Share the first one.</p>`;
+    return;
+  }
+  for (const status of statuses) {
+    const card = document.createElement("article");
+    card.className = "settings-info-card status-card";
+    const ownStatus = status.user_id === profile.id;
+    card.innerHTML = `<div class="status-heading"><strong>${escapeText(status.user_name || "Mingle user")}${ownStatus ? " · You" : ""}</strong><time>${escapeText(new Date(status.created_at).toLocaleString())}</time></div>
+      ${status.text ? `<p>${escapeText(status.text)}</p>` : ""}
+      ${ownStatus ? `<button class="text-button status-delete" type="button" data-status-id="${escapeText(status.id)}">Delete status</button>` : ""}`;
+    if (status.media_path) {
+      const image = document.createElement("img");
+      image.className = "status-image";
+      image.alt = "Status photo";
+      image.loading = "lazy";
+      card.append(image);
+      void getSignedMediaUrl(status.media_path).then((url) => {
+        if (image.isConnected) image.src = url;
+      }).catch((error) => {
+        console.error("Could not load status image:", error);
+        showToast(`Could not load status image: ${error.message}`);
+      });
+    }
+    feed.append(card);
+  }
+  feed.querySelectorAll(".status-delete").forEach((button) => {
+    button.addEventListener("click", () => void deleteStatus(button.dataset.statusId));
+  });
+}
+
+async function submitStatus(event) {
+  event.preventDefault();
+  const text = $("#statusText").value.trim();
+  const file = $("#statusImage").files?.[0] || null;
+  if (!text && !file) {
+    showToast("Add text or a photo to your status.");
+    return;
+  }
+  let mediaPath = null;
+  try {
+    if (file) {
+      if (!file.type.startsWith("image/") || file.size > MAX_IMAGE_SIZE) {
+        throw new Error("Choose a supported image no larger than 10 MB.");
+      }
+      mediaPath = `${profile.id}/status/${crypto.randomUUID()}.${mediaExtension(file.type)}`;
+      const { error } = await db().storage.from(MEDIA_BUCKET).upload(mediaPath, file, { contentType: file.type, upsert: false });
+      if (error) throw new Error(`Could not upload status photo: ${error.message}`);
+    }
+    const { error } = await db().rpc("create_status", {
+      p_text: text || null,
+      p_media_path: mediaPath,
+      p_media_mime: file?.type || null,
+      p_media_size: file?.size || null
+    });
+    if (error) throw new Error(error.message);
+    $("#statusForm").reset();
+    showToast("Status posted. It will disappear after 24 hours.");
+    await refreshStatuses();
+  } catch (error) {
+    if (mediaPath) {
+      const { error: cleanupError } = await db().storage.from(MEDIA_BUCKET).remove([mediaPath]);
+      if (cleanupError) {
+        showToast(`Could not post status: ${error.message}. Uploaded photo cleanup also failed: ${cleanupError.message}`);
+        return;
+      }
+    }
+    showToast(`Could not post status: ${error.message}`);
+  }
+}
+
+async function deleteStatus(statusId) {
+  const status = statuses.find((item) => item.id === statusId && item.user_id === profile.id);
+  if (!status || !window.confirm("Delete this status for everyone?")) return;
+  try {
+    const { error } = await db().from("statuses").delete().eq("id", statusId).eq("user_id", profile.id);
+    if (error) throw new Error(error.message);
+    if (status.media_path) {
+      const { error: cleanupError } = await db().storage.from(MEDIA_BUCKET).remove([status.media_path]);
+      if (cleanupError) {
+        await refreshStatuses();
+        showToast(`Status deleted, but its photo could not be removed: ${cleanupError.message}`);
+        return;
+      }
+    }
+    await refreshStatuses();
+  } catch (error) {
+    showToast(`Could not delete status: ${error.message}`);
+  }
+}
+
+function openChannelsPage() {
+  if (mediaRecorder?.state === "recording") stopVoiceRecording(true);
+  page = "channels";
+  currentPeer = null;
+  currentGroup = null;
+  currentChannel = null;
+  currentPeerArchived = false;
+  clearInterval(messageTimer);
+  messenger.classList.remove("show-chat");
+  messenger.classList.add("show-page");
+  $("#listTitle").textContent = "Channels";
+  $("#searchInput").parentElement.hidden = false;
+  $("#archiveViewButton").hidden = true;
+  $("#newChatButton").hidden = false;
+  $("#newChatButton").title = "Create a channel";
+  $("#newChatButton").setAttribute("aria-label", "Create a public channel");
+  updateNav("channels");
+  renderChannelList();
+  void refreshChannels();
+}
+
+async function refreshChannels() {
+  if (!profile) return;
+  try {
+    const { data, error } = await db().rpc("get_channels");
+    if (error) throw new Error(error.message);
+    channels = data || [];
+    if (page === "channels") {
+      if (currentChannel) {
+        currentChannel = channels.find((channel) => channel.id === currentChannel.id) || currentChannel;
+        renderChannelDetail(currentChannel);
+        await loadChannelPosts(currentChannel.id);
+      } else {
+        renderChannelList();
+      }
+    }
+  } catch (error) {
+    console.error("Could not load channels:", error);
+    showToast(`Could not load channels: ${error.message}`);
+  }
+}
+
+function renderChannelList() {
+  if (page !== "channels" || currentChannel) return;
+  chatList.replaceChildren();
+  const search = $("#searchInput").value.trim().toLowerCase();
+  const visible = channels.filter((channel) => `${channel.name} ${channel.description}`.toLowerCase().includes(search));
+  for (const channel of visible) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "chat-row";
+    button.innerHTML = `<span class="avatar">#</span><span class="row-copy"><span class="row-name">${escapeText(channel.name)}</span><span class="row-preview">${channel.is_following ? "Following" : "Public channel"} · ${Number(channel.follower_count) || 0} followers</span></span>`;
+    button.addEventListener("click", () => void openChannel(channel));
+    chatList.append(button);
+  }
+  if (!visible.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-list";
+    empty.textContent = search ? "No channels match your search." : "No channels yet. Create one or check back later.";
+    chatList.append(empty);
+  }
+  contentPanel.innerHTML = `<div class="welcome"><div class="welcome-mark" aria-hidden="true">#</div><h2>Public channels</h2><p>Discover channels and follow the ones you like. Only channel admins can publish.</p><button id="createChannelPageButton" class="primary" type="button">Create a channel</button></div><section id="channelDirectory" class="channel-directory" aria-label="Discover channels"></section>`;
+  $("#createChannelPageButton").addEventListener("click", () => void createChannel());
+  const directory = $("#channelDirectory");
+  if (!visible.length) {
+    directory.innerHTML = `<p class="empty-list">${search ? "No channels match your search." : "No channels have been created yet."}</p>`;
+  } else {
+    for (const channel of visible) {
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = "channel-directory-card";
+      card.innerHTML = `<strong>${escapeText(channel.name)}</strong><span>${escapeText(channel.description || "No description.")}</span><small>${Number(channel.follower_count) || 0} followers${channel.is_following ? " · Following" : ""}</small>`;
+      card.addEventListener("click", () => void openChannel(channel));
+      directory.append(card);
+    }
+  }
+}
+
+async function openChannel(channel) {
+  currentChannel = channel;
+  renderChannelDetail(channel);
+  await loadChannelPosts(channel.id);
+}
+
+function renderChannelDetail(channel) {
+  if (!channel || page !== "channels") return;
+  contentPanel.innerHTML = `<header class="conversation-header">
+      <button id="channelBackButton" class="icon-button back-button" type="button" aria-label="Back to channels">‹</button>
+      <span class="person"><span><span class="person-name">${escapeText(channel.name)}</span><span class="person-summary">${Number(channel.follower_count) || 0} followers · Public channel</span></span></span>
+      <button id="channelFollowButton" class="secondary" type="button">${channel.is_following ? "Unfollow" : "Follow"}</button>
+    </header>
+    <section class="settings-content"><p class="content-description">${escapeText(channel.description || "No description.")}</p>
+      ${channel.can_post ? `<form id="channelPostForm" class="status-composer"><label class="profile-label" for="channelPostText">Publish to your channel</label><textarea id="channelPostText" maxlength="2000" placeholder="Write an update"></textarea><label class="notification-button" for="channelPostImage">Add a photo (optional)</label><input id="channelPostImage" class="attachment-input" type="file" accept="image/jpeg,image/png,image/webp,image/gif"><button class="primary" type="submit">Publish post</button></form>` : ""}
+      <div id="channelPosts" class="channel-post-list" aria-live="polite"><p class="empty-list">Loading posts…</p></div>
+    </section>`;
+  $("#channelBackButton").addEventListener("click", () => {
+    currentChannel = null;
+    renderChannelList();
+  });
+  $("#channelFollowButton").addEventListener("click", () => void followChannel(channel));
+  $("#channelPostForm")?.addEventListener("submit", (event) => void submitChannelPost(event, channel));
+}
+
+async function loadChannelPosts(channelId) {
+  try {
+    const { data, error } = await db().rpc("get_channel_posts", { p_channel_id: channelId });
+    if (error) throw new Error(error.message);
+    if (currentChannel?.id !== channelId) return;
+    const list = $("#channelPosts");
+    if (!list) return;
+    list.replaceChildren();
+    if (!data?.length) {
+      list.innerHTML = `<p class="empty-list">No posts yet.</p>`;
+      return;
+    }
+    for (const post of data) {
+      const card = document.createElement("article");
+      card.className = "settings-info-card status-card";
+      card.innerHTML = `<div class="status-heading"><strong>${escapeText(post.author_name)}</strong><time>${escapeText(new Date(post.created_at).toLocaleString())}</time></div>${post.text ? `<p>${escapeText(post.text)}</p>` : ""}`;
+      if (post.media_path) {
+        const image = document.createElement("img");
+        image.className = "status-image";
+        image.alt = "Channel post photo";
+        image.loading = "lazy";
+        card.append(image);
+        void getSignedMediaUrl(post.media_path).then((url) => {
+          if (image.isConnected) image.src = url;
+        }).catch((error) => {
+          console.error("Could not load channel photo:", error);
+          showToast(`Could not load channel photo: ${error.message}`);
+        });
+      }
+      list.append(card);
+    }
+  } catch (error) {
+    console.error("Could not load channel posts:", error);
+    showToast(`Could not load channel posts: ${error.message}`);
+  }
+}
+
+async function followChannel(channel) {
+  try {
+    const { error } = await db().rpc("follow_channel", { p_channel_id: channel.id, p_follow: !channel.is_following });
+    if (error) throw new Error(error.message);
+    await refreshChannels();
+  } catch (error) {
+    showToast(`Could not update channel follow: ${error.message}`);
+  }
+}
+
+async function createChannel() {
+  const name = window.prompt("Choose a name for your public channel.");
+  if (name === null) return;
+  const description = window.prompt("Add a short channel description (optional).") || "";
+  try {
+    const { data, error } = await db().rpc("create_channel", { p_name: name.trim(), p_description: description.trim() });
+    if (error) throw new Error(error.message);
+    await refreshChannels();
+    const channel = channels.find((item) => item.id === data);
+    if (channel) await openChannel(channel);
+    showToast("Channel created. You are its owner and can publish posts.");
+  } catch (error) {
+    showToast(`Could not create channel: ${error.message}`);
+  }
+}
+
+async function submitChannelPost(event, channel) {
+  event.preventDefault();
+  const text = $("#channelPostText").value.trim();
+  const file = $("#channelPostImage").files?.[0] || null;
+  if (!text && !file) {
+    showToast("Add text or a photo to your post.");
+    return;
+  }
+  let mediaPath = null;
+  try {
+    if (file) {
+      if (!file.type.startsWith("image/") || file.size > MAX_IMAGE_SIZE) {
+        throw new Error("Choose a supported image no larger than 10 MB.");
+      }
+      mediaPath = `${profile.id}/${channel.id}/${crypto.randomUUID()}.${mediaExtension(file.type)}`;
+      const { error } = await db().storage.from(MEDIA_BUCKET).upload(mediaPath, file, { contentType: file.type, upsert: false });
+      if (error) throw new Error(`Could not upload channel photo: ${error.message}`);
+    }
+    const { error } = await db().rpc("create_channel_post", {
+      p_channel_id: channel.id,
+      p_text: text || null,
+      p_media_path: mediaPath,
+      p_media_mime: file?.type || null,
+      p_media_size: file?.size || null
+    });
+    if (error) throw new Error(error.message);
+    $("#channelPostForm").reset();
+    await loadChannelPosts(channel.id);
+    await refreshChannels();
+  } catch (error) {
+    if (mediaPath) {
+      const { error: cleanupError } = await db().storage.from(MEDIA_BUCKET).remove([mediaPath]);
+      if (cleanupError) {
+        showToast(`Could not publish channel post: ${error.message}. Uploaded photo cleanup also failed: ${cleanupError.message}`);
+        return;
+      }
+    }
+    showToast(`Could not publish channel post: ${error.message}`);
+  }
 }
 
 async function findContact(event) {
@@ -2820,7 +3455,11 @@ async function initialize() {
   emailInput.addEventListener("input", () => {
     $("#forgotPasswordButton").hidden = authMode === "create";
   });
-  $("#searchInput").addEventListener("input", renderChats);
+  $("#searchInput").addEventListener("input", () => {
+    if (page === "groups") renderGroups();
+    else if (page === "channels") renderChannelList();
+    else renderChats();
+  });
   $("#archiveViewButton").addEventListener("click", () => {
     archivedView = !archivedView;
     currentPeer = null;
@@ -2835,6 +3474,14 @@ async function initialize() {
   $("#newChatButton").addEventListener("click", () => {
     if (page === "groups") {
       void createCommunity();
+      return;
+    }
+    if (page === "channels") {
+      void createChannel();
+      return;
+    }
+    if (page === "statuses") {
+      $("#statusText")?.focus();
       return;
     }
     dialogError.hidden = true;
@@ -2862,6 +3509,8 @@ async function initialize() {
     button.addEventListener("click", () => {
       if (button.dataset.page === "settings") openSettingsPage();
       else if (button.dataset.page === "groups") openGroupsPage();
+      else if (button.dataset.page === "statuses") openStatusesPage();
+      else if (button.dataset.page === "channels") openChannelsPage();
       else openChatsPage();
     });
   });

@@ -932,11 +932,14 @@
   set search_path = ''
   as $$
   begin
-    if auth.uid() is null or not exists (
-      select 1
-      from public.community_groups as group_chat
-      join public.community_members as member on member.community_id = group_chat.community_id
-      where group_chat.id = p_group_id and member.user_id = auth.uid()
+    if auth.uid() is null or not (
+      exists (
+        select 1
+        from public.community_groups as group_chat
+        join public.community_members as member on member.community_id = group_chat.community_id
+        where group_chat.id = p_group_id and member.user_id = auth.uid()
+      )
+      or public.is_community_group_admin(p_group_id)
     ) then
       raise exception 'You are not a member of this community.';
     end if;
@@ -1091,6 +1094,13 @@
           join public.communities as community on community.id = group_chat.community_id
           where message.attachment_path = object.name
             and (message.sender_id = p_user_id or community.created_by = p_user_id)
+        )
+        or exists (
+          select 1
+          from public.group_messages as message
+          join public.community_groups as group_chat on group_chat.id = message.group_id
+          where message.attachment_path = object.name
+            and group_chat.created_by = p_user_id
         )
       );
   $$;
@@ -1288,5 +1298,771 @@
     end if;
   end;
   $$;
+
+  notify pgrst, 'reload schema';
+
+  create table if not exists public.profile_avatars (
+    user_id uuid primary key references public.profiles (id) on delete cascade,
+    storage_path text not null unique,
+    visibility text not null default 'everyone' check (visibility in ('everyone', 'contacts', 'nobody')),
+    updated_at timestamptz not null default now()
+  );
+
+  create table if not exists public.saved_messages (
+    id uuid primary key default gen_random_uuid(),
+    user_id uuid not null references public.profiles (id) on delete cascade,
+    text text not null check (char_length(btrim(text)) between 1 and 2000),
+    created_at timestamptz not null default now()
+  );
+
+  create index if not exists saved_messages_user_created_idx
+    on public.saved_messages (user_id, created_at);
+
+  create table if not exists public.statuses (
+    id uuid primary key default gen_random_uuid(),
+    user_id uuid not null references public.profiles (id) on delete cascade,
+    text text,
+    media_path text,
+    media_mime text,
+    media_size bigint,
+    created_at timestamptz not null default now(),
+    expires_at timestamptz not null default (now() + interval '24 hours'),
+    constraint statuses_content_check check (
+      nullif(btrim(text), '') is not null or media_path is not null
+    ),
+    constraint statuses_text_check check (text is null or char_length(btrim(text)) between 1 and 700),
+    constraint statuses_media_check check (
+      (media_path is null and media_mime is null and media_size is null)
+      or (
+        media_path is not null
+        and media_mime is not null
+        and media_mime in ('image/jpeg', 'image/png', 'image/webp', 'image/gif')
+        and media_size is not null
+        and media_size between 1 and 10485760
+      )
+    ),
+    constraint statuses_expiry_check check (expires_at > created_at and expires_at <= created_at + interval '24 hours')
+  );
+
+  create index if not exists statuses_active_created_idx
+    on public.statuses (expires_at, created_at desc);
+
+  create table if not exists public.channels (
+    id uuid primary key default gen_random_uuid(),
+    name text not null check (char_length(btrim(name)) between 1 and 60),
+    description text not null default '' check (char_length(description) <= 500),
+    owner_id uuid not null references public.profiles (id) on delete cascade,
+    created_at timestamptz not null default now()
+  );
+
+  create table if not exists public.channel_admins (
+    channel_id uuid not null references public.channels (id) on delete cascade,
+    user_id uuid not null references public.profiles (id) on delete cascade,
+    role text not null default 'admin' check (role in ('owner', 'admin')),
+    created_at timestamptz not null default now(),
+    primary key (channel_id, user_id)
+  );
+
+  create table if not exists public.channel_follows (
+    channel_id uuid not null references public.channels (id) on delete cascade,
+    user_id uuid not null references public.profiles (id) on delete cascade,
+    created_at timestamptz not null default now(),
+    primary key (channel_id, user_id)
+  );
+
+  create table if not exists public.channel_posts (
+    id uuid primary key default gen_random_uuid(),
+    channel_id uuid not null references public.channels (id) on delete cascade,
+    author_id uuid not null references public.profiles (id) on delete cascade,
+    text text,
+    media_path text,
+    media_mime text,
+    media_size bigint,
+    created_at timestamptz not null default now(),
+    constraint channel_posts_content_check check (
+      nullif(btrim(text), '') is not null or media_path is not null
+    ),
+    constraint channel_posts_text_check check (text is null or char_length(btrim(text)) between 1 and 2000),
+    constraint channel_posts_media_check check (
+      (media_path is null and media_mime is null and media_size is null)
+      or (
+        media_path is not null
+        and media_mime is not null
+        and media_mime in ('image/jpeg', 'image/png', 'image/webp', 'image/gif')
+        and media_size is not null
+        and media_size between 1 and 10485760
+      )
+    )
+  );
+
+  create index if not exists channel_posts_created_idx
+    on public.channel_posts (channel_id, created_at desc);
+
+  create or replace function public.account_media_paths(p_user_id uuid)
+  returns table(storage_path text)
+  language sql
+  stable
+  security definer
+  set search_path = ''
+  as $$
+    select distinct object.name
+    from storage.objects as object
+    where object.bucket_id = 'mingle-chat-media'
+      and (
+        (storage.foldername(object.name))[1] = p_user_id::text
+        or exists (
+          select 1
+          from public.messages as message
+          where message.attachment_path = object.name
+            and (message.sender_id = p_user_id or message.recipient_id = p_user_id)
+        )
+        or exists (
+          select 1
+          from public.group_messages as message
+          join public.community_groups as group_chat on group_chat.id = message.group_id
+          join public.communities as community on community.id = group_chat.community_id
+          where message.attachment_path = object.name
+            and (message.sender_id = p_user_id or community.created_by = p_user_id)
+        )
+        or exists (
+          select 1
+          from public.group_messages as message
+          join public.community_groups as group_chat on group_chat.id = message.group_id
+          where message.attachment_path = object.name
+            and group_chat.created_by = p_user_id
+        )
+        or exists (
+          select 1
+          from public.channel_posts as post
+          join public.channels as channel on channel.id = post.channel_id
+          where post.media_path = object.name
+            and (post.author_id = p_user_id or channel.owner_id = p_user_id)
+        )
+      );
+  $$;
+
+  create table if not exists public.community_group_admins (
+    group_id uuid not null references public.community_groups (id) on delete cascade,
+    user_id uuid not null references public.profiles (id) on delete cascade,
+    role text not null default 'admin' check (role in ('owner', 'admin')),
+    created_at timestamptz not null default now(),
+    primary key (group_id, user_id)
+  );
+
+  insert into public.community_group_admins (group_id, user_id, role)
+  select id, created_by, 'owner' from public.community_groups
+  on conflict (group_id, user_id) do nothing;
+
+  create or replace function public.register_community_group_owner()
+  returns trigger
+  language plpgsql
+  security definer
+  set search_path = ''
+  as $$
+  begin
+    insert into public.community_group_admins (group_id, user_id, role)
+    values (new.id, new.created_by, 'owner')
+    on conflict (group_id, user_id) do nothing;
+    return new;
+  end;
+  $$;
+
+  drop trigger if exists community_group_owner_admin on public.community_groups;
+  create trigger community_group_owner_admin
+    after insert on public.community_groups
+    for each row execute function public.register_community_group_owner();
+
+  alter table public.community_group_admins enable row level security;
+
+  drop policy if exists "Community members can view group admins" on public.community_group_admins;
+  create policy "Community members can view group admins"
+    on public.community_group_admins for select to authenticated
+    using (exists (
+      select 1 from public.community_groups as group_chat
+      where group_chat.id = community_group_admins.group_id
+        and public.is_community_member(group_chat.community_id)
+    ));
+
+  revoke all on public.community_group_admins from anon, authenticated;
+  grant select on public.community_group_admins to authenticated;
+
+  create or replace function public.is_community_group_admin(p_group_id uuid)
+  returns boolean
+  language sql
+  stable
+  security definer
+  set search_path = ''
+  as $$
+    select auth.uid() is not null and exists (
+      select 1 from public.community_groups as group_chat
+      where group_chat.id = p_group_id
+        and (
+          group_chat.created_by = auth.uid()
+          or exists (
+            select 1 from public.community_group_admins as admin
+            where admin.group_id = group_chat.id and admin.user_id = auth.uid()
+          )
+          or exists (
+            select 1 from public.community_members as member
+            where member.community_id = group_chat.community_id
+              and member.user_id = auth.uid()
+              and member.role in ('owner', 'admin')
+          )
+        )
+    );
+  $$;
+
+  create or replace function public.get_community_group_admins(p_group_id uuid)
+  returns table (user_id uuid, user_name text, role text)
+  language plpgsql
+  stable
+  security definer
+  set search_path = ''
+  as $$
+  begin
+    if auth.uid() is null or not public.is_community_group_admin(p_group_id) then
+      raise exception 'Only this group creator or an admin can manage group admins.';
+    end if;
+    return query
+      select admin.user_id, person.name, admin.role
+      from public.community_group_admins as admin
+      join public.profiles as person on person.id = admin.user_id
+      where admin.group_id = p_group_id
+      order by case when admin.role = 'owner' then 0 else 1 end, person.name;
+  end;
+  $$;
+
+  create or replace function public.add_community_group_admin(p_group_id uuid, p_identifier text)
+  returns void
+  language plpgsql
+  security definer
+  set search_path = ''
+  as $$
+  declare
+    v_person_id uuid;
+    v_community_id uuid;
+    v_identifier text := pg_catalog.lower(pg_catalog.btrim(coalesce(p_identifier, '')));
+  begin
+    if auth.uid() is null or not public.is_community_group_admin(p_group_id) then
+      raise exception 'Only this group creator or an admin can add group admins.';
+    end if;
+    select group_chat.community_id into v_community_id
+    from public.community_groups as group_chat
+    where group_chat.id = p_group_id;
+    if v_community_id is null then raise exception 'That group could not be found.'; end if;
+    select person.id into v_person_id
+    from public.profiles as person
+    where person.phone = v_identifier or pg_catalog.lower(person.email) = v_identifier
+    limit 1;
+    if v_person_id is null then raise exception 'No Mingle account matches that phone number or email.'; end if;
+    if not exists (
+      select 1 from public.community_members as member
+      where member.community_id = v_community_id and member.user_id = v_person_id
+    ) then raise exception 'Only an existing community member can be a group admin.'; end if;
+    insert into public.community_group_admins (group_id, user_id, role)
+    values (p_group_id, v_person_id, 'admin')
+    on conflict (group_id, user_id) do nothing;
+  end;
+  $$;
+
+  create or replace function public.remove_community_group_admin(p_group_id uuid, p_user_id uuid)
+  returns void
+  language plpgsql
+  security definer
+  set search_path = ''
+  as $$
+  begin
+    if auth.uid() is null or not public.is_community_group_admin(p_group_id) then
+      raise exception 'Only this group creator or an admin can remove group admins.';
+    end if;
+    delete from public.community_group_admins
+    where group_id = p_group_id and user_id = p_user_id and role <> 'owner';
+    if not found then raise exception 'That group admin could not be removed.'; end if;
+  end;
+  $$;
+
+  alter table public.profile_avatars enable row level security;
+  alter table public.saved_messages enable row level security;
+  alter table public.statuses enable row level security;
+  alter table public.channels enable row level security;
+  alter table public.channel_admins enable row level security;
+  alter table public.channel_follows enable row level security;
+  alter table public.channel_posts enable row level security;
+
+  drop policy if exists "Community members can view their communities" on public.communities;
+  create policy "Community members can view their communities"
+    on public.communities for select to authenticated
+    using (
+      public.is_community_member(id)
+      or created_by = (select auth.uid())
+      or exists (
+        select 1 from public.community_groups as group_chat
+        where group_chat.community_id = communities.id
+          and group_chat.created_by = (select auth.uid())
+      )
+    );
+
+  drop policy if exists "Community members can view groups" on public.community_groups;
+  create policy "Community members can view groups"
+    on public.community_groups for select to authenticated
+    using (
+      public.is_community_member(community_id)
+      or public.is_community_group_admin(id)
+    );
+
+  drop policy if exists "Community members can read group messages" on public.group_messages;
+  create policy "Community members can read group messages"
+    on public.group_messages for select to authenticated
+    using (exists (
+      select 1 from public.community_groups as group_chat
+      where group_chat.id = group_messages.group_id
+        and (
+          public.is_community_member(group_chat.community_id)
+          or public.is_community_group_admin(group_chat.id)
+        )
+    ));
+
+  drop policy if exists "Community members can send group messages" on public.group_messages;
+  create policy "Community members can send group messages"
+    on public.group_messages for insert to authenticated
+    with check (
+      sender_id = (select auth.uid())
+      and exists (
+        select 1 from public.community_groups as group_chat
+        where group_chat.id = group_messages.group_id
+          and (
+            public.is_community_member(group_chat.community_id)
+            or public.is_community_group_admin(group_chat.id)
+          )
+      )
+    );
+
+  drop policy if exists "Mingle users can view permitted avatars" on public.profile_avatars;
+  create policy "Mingle users can view permitted avatars"
+    on public.profile_avatars for select to authenticated
+    using (
+      user_id = (select auth.uid())
+      or visibility = 'everyone'
+      or (
+        visibility = 'contacts'
+        and exists (
+          select 1 from public.messages as message
+          where (message.sender_id = profile_avatars.user_id and message.recipient_id = (select auth.uid()))
+             or (message.recipient_id = profile_avatars.user_id and message.sender_id = (select auth.uid()))
+        )
+      )
+    );
+
+  drop policy if exists "Users can manage their saved messages" on public.saved_messages;
+  create policy "Users can manage their saved messages"
+    on public.saved_messages for all to authenticated
+    using (user_id = (select auth.uid()))
+    with check (user_id = (select auth.uid()));
+
+  drop policy if exists "Mingle users can view active statuses" on public.statuses;
+  create policy "Mingle users can view active statuses"
+    on public.statuses for select to authenticated
+    using (expires_at > now());
+
+  drop policy if exists "Users can publish their own statuses" on public.statuses;
+  create policy "Users can publish their own statuses"
+    on public.statuses for insert to authenticated
+    with check (
+      user_id = (select auth.uid())
+      and expires_at > now()
+      and expires_at <= created_at + interval '24 hours'
+      and (media_path is null or media_path like (select auth.uid())::text || '/status/%')
+    );
+
+  drop policy if exists "Users can remove their own statuses" on public.statuses;
+  create policy "Users can remove their own statuses"
+    on public.statuses for delete to authenticated
+    using (user_id = (select auth.uid()));
+
+  drop policy if exists "Mingle users can discover channels" on public.channels;
+  create policy "Mingle users can discover channels"
+    on public.channels for select to authenticated
+    using (true);
+
+  drop policy if exists "Mingle users can view channel admins" on public.channel_admins;
+  create policy "Mingle users can view channel admins"
+    on public.channel_admins for select to authenticated
+    using (true);
+
+  drop policy if exists "Users can view their channel follows" on public.channel_follows;
+  create policy "Users can view their channel follows"
+    on public.channel_follows for select to authenticated
+    using (user_id = (select auth.uid()));
+
+  drop policy if exists "Mingle users can view channel posts" on public.channel_posts;
+  create policy "Mingle users can view channel posts"
+    on public.channel_posts for select to authenticated
+    using (true);
+
+  revoke all on public.profile_avatars, public.saved_messages, public.statuses, public.channels,
+    public.channel_admins, public.channel_follows, public.channel_posts
+    from anon, authenticated;
+  grant select on public.profile_avatars to authenticated;
+  grant select, insert, delete on public.saved_messages to authenticated;
+  grant select, delete on public.statuses to authenticated;
+  grant select on public.channels, public.channel_admins, public.channel_follows, public.channel_posts to authenticated;
+
+  create or replace function public.is_channel_admin(p_channel_id uuid)
+  returns boolean
+  language sql
+  stable
+  security definer
+  set search_path = ''
+  as $$
+    select auth.uid() is not null and exists (
+      select 1 from public.channel_admins as admin
+      where admin.channel_id = p_channel_id and admin.user_id = auth.uid()
+    );
+  $$;
+
+  create or replace function public.can_upload_chat_media(p_target_id text)
+  returns boolean
+  language sql
+  stable
+  security definer
+  set search_path = ''
+  as $$
+    select auth.uid() is not null and (
+      p_target_id in ('avatar', 'status')
+      or exists (
+        select 1 from public.channels as channel
+        where channel.id::text = p_target_id and public.is_channel_admin(channel.id)
+      )
+      or exists (
+        select 1 from public.profiles as recipient
+        where recipient.id::text = p_target_id and recipient.id <> auth.uid()
+      )
+      or exists (
+        select 1 from public.community_groups as group_chat
+        where group_chat.id::text = p_target_id and (
+          public.is_community_member(group_chat.community_id)
+          or public.is_community_group_admin(group_chat.id)
+        )
+      )
+    );
+  $$;
+
+  drop policy if exists "Mingle chat members can view message media" on storage.objects;
+  create policy "Mingle chat members can view message media"
+    on storage.objects for select to authenticated
+    using (
+      bucket_id = 'mingle-chat-media'
+      and (
+        (storage.foldername(name))[1] = (select auth.uid())::text
+        or exists (
+          select 1 from public.messages as message
+          where message.attachment_path = storage.objects.name
+            and message.deleted_at is null
+            and (message.sender_id = (select auth.uid()) or message.recipient_id = (select auth.uid()))
+        )
+        or exists (
+          select 1 from public.group_messages as message
+          join public.community_groups as group_chat on group_chat.id = message.group_id
+          where message.attachment_path = storage.objects.name
+            and message.deleted_at is null
+            and (
+              public.is_community_member(group_chat.community_id)
+              or public.is_community_group_admin(group_chat.id)
+            )
+        )
+        or exists (
+          select 1 from public.profile_avatars as avatar
+          where avatar.storage_path = storage.objects.name
+        )
+        or exists (
+          select 1 from public.statuses as status
+          where status.media_path = storage.objects.name and status.expires_at > now()
+        )
+        or exists (
+          select 1 from public.channel_posts as post
+          where post.media_path = storage.objects.name
+        )
+      )
+    );
+
+  create or replace function public.set_my_avatar(p_storage_path text, p_visibility text)
+  returns void
+  language plpgsql
+  security definer
+  set search_path = ''
+  as $$
+  begin
+    if auth.uid() is null or p_visibility is null or p_visibility not in ('everyone', 'contacts', 'nobody') then
+      raise exception 'Choose a valid profile picture visibility.';
+    end if;
+    if p_storage_path !~ ('^' || auth.uid()::text || '/avatar/[^/]+$')
+      or not exists (
+        select 1 from storage.objects as object
+        where object.bucket_id = 'mingle-chat-media' and object.name = p_storage_path
+          and object.metadata ->> 'mimetype' in ('image/jpeg', 'image/png', 'image/webp', 'image/gif')
+          and (object.metadata ->> 'size')::bigint between 1 and 10485760
+      ) then
+      raise exception 'Upload a valid profile picture before saving it.';
+    end if;
+    insert into public.profile_avatars (user_id, storage_path, visibility, updated_at)
+    values (auth.uid(), p_storage_path, p_visibility, now())
+    on conflict (user_id) do update
+      set storage_path = excluded.storage_path,
+          visibility = excluded.visibility,
+          updated_at = excluded.updated_at;
+  end;
+  $$;
+
+  create or replace function public.get_active_statuses()
+  returns table (
+    id uuid,
+    user_id uuid,
+    user_name text,
+    text text,
+    media_path text,
+    media_mime text,
+    created_at timestamptz,
+    expires_at timestamptz
+  )
+  language sql
+  stable
+  security definer
+  set search_path = ''
+  as $$
+    select status.id, status.user_id, person.name, status.text, status.media_path,
+      status.media_mime, status.created_at, status.expires_at
+    from public.statuses as status
+    join public.profiles as person on person.id = status.user_id
+    where status.expires_at > now()
+    order by status.created_at desc;
+  $$;
+
+  create or replace function public.create_status(
+    p_text text,
+    p_media_path text,
+    p_media_mime text,
+    p_media_size bigint
+  )
+  returns uuid
+  language plpgsql
+  security definer
+  set search_path = ''
+  as $$
+  declare
+    v_user_id uuid := auth.uid();
+    v_text text := nullif(pg_catalog.btrim(coalesce(p_text, '')), '');
+    v_id uuid;
+  begin
+    if v_user_id is null then raise exception 'Please log in to post a status.'; end if;
+    if v_text is null and p_media_path is null then raise exception 'Add text or a photo to your status.'; end if;
+    if v_text is not null and pg_catalog.char_length(v_text) > 700 then
+      raise exception 'Status text must be 700 characters or fewer.';
+    end if;
+    if p_media_path is not null and (
+      p_media_path !~ ('^' || v_user_id::text || '/status/[^/]+$')
+      or p_media_mime is null
+      or p_media_mime not in ('image/jpeg', 'image/png', 'image/webp', 'image/gif')
+      or p_media_size is null
+      or p_media_size not between 1 and 10485760
+      or not exists (
+        select 1 from storage.objects as object
+        where object.bucket_id = 'mingle-chat-media' and object.name = p_media_path
+          and object.metadata ->> 'mimetype' = p_media_mime
+          and object.metadata ->> 'size' = p_media_size::text
+      )
+    ) then raise exception 'Upload a valid image under 10 MB for your status.'; end if;
+    insert into public.statuses (user_id, text, media_path, media_mime, media_size)
+    values (v_user_id, v_text, p_media_path, p_media_mime, p_media_size)
+    returning id into v_id;
+    return v_id;
+  end;
+  $$;
+
+  create or replace function public.create_channel(p_name text, p_description text)
+  returns uuid
+  language plpgsql
+  security definer
+  set search_path = ''
+  as $$
+  declare
+    v_user_id uuid := auth.uid();
+    v_channel_id uuid;
+    v_name text := pg_catalog.btrim(coalesce(p_name, ''));
+    v_description text := pg_catalog.btrim(coalesce(p_description, ''));
+  begin
+    if v_user_id is null then raise exception 'Please log in to create a channel.'; end if;
+    if pg_catalog.char_length(v_name) not between 1 and 60 then
+      raise exception 'Channel names must be between 1 and 60 characters.';
+    end if;
+    if pg_catalog.char_length(v_description) > 500 then
+      raise exception 'Channel descriptions must be 500 characters or fewer.';
+    end if;
+    insert into public.channels (name, description, owner_id)
+    values (v_name, v_description, v_user_id)
+    returning id into v_channel_id;
+    insert into public.channel_admins (channel_id, user_id, role)
+    values (v_channel_id, v_user_id, 'owner');
+    return v_channel_id;
+  end;
+  $$;
+
+  create or replace function public.get_channels()
+  returns table (
+    id uuid,
+    name text,
+    description text,
+    owner_id uuid,
+    owner_name text,
+    created_at timestamptz,
+    follower_count bigint,
+    is_following boolean,
+    can_post boolean,
+    latest_text text,
+    latest_at timestamptz
+  )
+  language sql
+  stable
+  security definer
+  set search_path = ''
+  as $$
+    select channel.id, channel.name, channel.description, channel.owner_id, owner.name,
+      channel.created_at, counts.follower_count,
+      exists (
+        select 1 from public.channel_follows as follow
+        where follow.channel_id = channel.id and follow.user_id = auth.uid()
+      ),
+      public.is_channel_admin(channel.id),
+      latest.text, latest.created_at
+    from public.channels as channel
+    join public.profiles as owner on owner.id = channel.owner_id
+    left join lateral (
+      select pg_catalog.count(*) as follower_count
+      from public.channel_follows as follow
+      where follow.channel_id = channel.id
+    ) as counts on true
+    left join lateral (
+      select post.text, post.created_at
+      from public.channel_posts as post
+      where post.channel_id = channel.id
+      order by post.created_at desc
+      limit 1
+    ) as latest on true
+    order by latest.created_at desc nulls last, channel.created_at desc;
+  $$;
+
+  create or replace function public.follow_channel(p_channel_id uuid, p_follow boolean)
+  returns void
+  language plpgsql
+  security definer
+  set search_path = ''
+  as $$
+  begin
+    if auth.uid() is null then raise exception 'Please log in to follow a channel.'; end if;
+    if not exists (select 1 from public.channels where id = p_channel_id) then
+      raise exception 'That channel could not be found.';
+    end if;
+    if p_follow then
+      insert into public.channel_follows (channel_id, user_id)
+      values (p_channel_id, auth.uid()) on conflict do nothing;
+    else
+      delete from public.channel_follows
+      where channel_id = p_channel_id and user_id = auth.uid();
+    end if;
+  end;
+  $$;
+
+  create or replace function public.create_channel_post(
+    p_channel_id uuid,
+    p_text text,
+    p_media_path text,
+    p_media_mime text,
+    p_media_size bigint
+  )
+  returns uuid
+  language plpgsql
+  security definer
+  set search_path = ''
+  as $$
+  declare
+    v_text text := nullif(pg_catalog.btrim(coalesce(p_text, '')), '');
+    v_id uuid;
+  begin
+    if auth.uid() is null or not public.is_channel_admin(p_channel_id) then
+      raise exception 'Only channel admins can publish posts.';
+    end if;
+    if v_text is null and p_media_path is null then raise exception 'Add text or a photo to your post.'; end if;
+    if v_text is not null and pg_catalog.char_length(v_text) > 2000 then
+      raise exception 'Channel posts must be 2,000 characters or fewer.';
+    end if;
+    if p_media_path is not null and (
+      p_media_path !~ ('^' || auth.uid()::text || '/' || p_channel_id::text || '/[^/]+$')
+      or p_media_mime is null
+      or p_media_mime not in ('image/jpeg', 'image/png', 'image/webp', 'image/gif')
+      or p_media_size is null
+      or p_media_size not between 1 and 10485760
+      or not exists (
+        select 1 from storage.objects as object
+        where object.bucket_id = 'mingle-chat-media' and object.name = p_media_path
+          and object.metadata ->> 'mimetype' = p_media_mime
+          and object.metadata ->> 'size' = p_media_size::text
+      )
+    ) then raise exception 'Upload a valid image under 10 MB for your post.'; end if;
+    insert into public.channel_posts (channel_id, author_id, text, media_path, media_mime, media_size)
+    values (p_channel_id, auth.uid(), v_text, p_media_path, p_media_mime, p_media_size)
+    returning id into v_id;
+    return v_id;
+  end;
+  $$;
+
+  create or replace function public.get_channel_posts(p_channel_id uuid)
+  returns table (
+    id uuid,
+    author_id uuid,
+    author_name text,
+    text text,
+    media_path text,
+    media_mime text,
+    created_at timestamptz
+  )
+  language sql
+  stable
+  security definer
+  set search_path = ''
+  as $$
+    select post.id, post.author_id, person.name, post.text, post.media_path, post.media_mime, post.created_at
+    from public.channel_posts as post
+    join public.profiles as person on person.id = post.author_id
+    where post.channel_id = p_channel_id
+    order by post.created_at desc
+    limit 100;
+  $$;
+
+  revoke all on function public.is_channel_admin(uuid) from public, anon;
+  revoke all on function public.register_community_group_owner() from public, anon, authenticated;
+  revoke all on function public.is_community_group_admin(uuid) from public, anon;
+  revoke all on function public.get_community_group_admins(uuid) from public, anon;
+  revoke all on function public.add_community_group_admin(uuid, text) from public, anon;
+  revoke all on function public.remove_community_group_admin(uuid, uuid) from public, anon;
+  revoke all on function public.set_my_avatar(text, text) from public, anon;
+  revoke all on function public.get_active_statuses() from public, anon;
+  revoke all on function public.create_status(text, text, text, bigint) from public, anon;
+  revoke all on function public.create_channel(text, text) from public, anon;
+  revoke all on function public.get_channels() from public, anon;
+  revoke all on function public.follow_channel(uuid, boolean) from public, anon;
+  revoke all on function public.create_channel_post(uuid, text, text, text, bigint) from public, anon;
+  revoke all on function public.get_channel_posts(uuid) from public, anon;
+  grant execute on function public.is_channel_admin(uuid) to authenticated;
+  grant execute on function public.is_community_group_admin(uuid) to authenticated;
+  grant execute on function public.get_community_group_admins(uuid) to authenticated;
+  grant execute on function public.add_community_group_admin(uuid, text) to authenticated;
+  grant execute on function public.remove_community_group_admin(uuid, uuid) to authenticated;
+  grant execute on function public.set_my_avatar(text, text) to authenticated;
+  grant execute on function public.get_active_statuses() to authenticated;
+  grant execute on function public.create_status(text, text, text, bigint) to authenticated;
+  grant execute on function public.create_channel(text, text) to authenticated;
+  grant execute on function public.get_channels() to authenticated;
+  grant execute on function public.follow_channel(uuid, boolean) to authenticated;
+  grant execute on function public.create_channel_post(uuid, text, text, text, bigint) to authenticated;
+  grant execute on function public.get_channel_posts(uuid) to authenticated;
 
   notify pgrst, 'reload schema';
