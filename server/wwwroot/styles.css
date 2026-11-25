@@ -227,6 +227,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visib
 [data-theme="dark"] #adminPasswordDialog .field label { color: #d7e3da; }
 [data-theme="dark"] #adminPasswordDialog .dialog-input { border-color: var(--line); background: #111a15; color: #e4ede6; }
 [data-theme="dark"] #adminPasswordDialog .secondary { background: #1c2a21; color: #d7e3da; }
+[data-theme="dark"] .admin-account-row { background: #17221b; }
+[data-theme="dark"] .admin-account-copy strong { color: #e4ede6; }
 [data-theme="dark"] .settings-choice, [data-theme="dark"] .wallpaper-choice { background: #1c2a21; color: #d7e3da; }
 dialog { width: min(400px, calc(100% - 28px)); padding: 23px; border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 20px 80px #10221835; }
 dialog::backdrop { background: #10221880; }
