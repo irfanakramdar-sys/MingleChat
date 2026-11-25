@@ -133,6 +133,18 @@ function getFreeAssistantReply(question) {
   if (/online|offline|presence|read receipt|seen/.test(lower)) {
     return "The profile header can show Online or the last-seen time. A sent message shows Read after the recipient opens it.";
   }
+  if (/notification|push|background|locked phone|ringtone|call alert/.test(lower)) {
+    return "Open Settings → Notifications, allow notifications on this device, and use Send test notification. Background push also needs the site owner's Firebase setup for Android or VAPID setup for browsers. A powered-off or force-stopped phone cannot receive alerts.";
+  }
+  if (/photo|video|voice note|voice message|attachment|media/.test(lower)) {
+    return "Open a one-to-one chat and use the attachment or microphone buttons beside the message box. Photos, videos, and voice notes are stored in the project's private Supabase storage.";
+  }
+  if (/privacy|private|encrypted|encryption|secure/.test(lower)) {
+    return "Mingle chat data is stored in its Supabase project and is not end-to-end encrypted. Do not send information that must remain private from the project owner.";
+  }
+  if (/account|sign up|signup|create.*profile|register/.test(lower)) {
+    return "Choose Create account, enter your name, email, a unique 10-digit mobile number, and a password of at least 8 characters. Use your email and password to log in.";
+  }
   if (/group|community/.test(lower)) {
     return "Open Groups, create a community, and use + Group to create groups. Community owners and admins can invite members.";
   }
@@ -140,7 +152,7 @@ function getFreeAssistantReply(question) {
     return "Describe the issue here or report it in the complaints section. Mingle aims to review valid reports within 4–6 days.";
   }
   if (/thank/.test(lower)) return "You're welcome!";
-  return "I can help with Mingle chats, contacts, groups, account settings, notifications, bugs, and simple questions. Please describe what you need in English.";
+  return null;
 }
 
 function mapProfile(row) {
@@ -847,11 +859,31 @@ function stopRingtone() {
 }
 
 async function sendPushEvent(event) {
-  if (!WEB_PUSH_PUBLIC_KEY && !window.MingleAndroid) return;
   const { error } = await db().functions.invoke("send-push", { body: event });
   if (error) {
     console.error("Background push delivery could not be requested:", error);
     showToast(`${event.kind === "incoming-call" ? "The call is ringing" : "Your message was sent"}, but background notification failed: ${error.message}`);
+  }
+}
+
+async function sendTestNotification() {
+  const status = $("#testNotificationStatus");
+  const button = $("#sendTestNotificationButton");
+  button.disabled = true;
+  status.textContent = "Sending a test notification to your registered devices…";
+  try {
+    const { data, error } = await db().functions.invoke("send-push", { body: { kind: "test" } });
+    if (error) throw new Error(error.message);
+    if (!data?.delivered) {
+      status.textContent = "No test notification was delivered. Enable notifications on this device and check the push setup.";
+      return;
+    }
+    status.textContent = `Test notification sent to ${data.delivered} registered device${data.delivered === 1 ? "" : "s"}.`;
+  } catch (error) {
+    console.error("Could not send a test notification:", error);
+    status.textContent = `Test notification failed: ${error.message}`;
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -2279,7 +2311,7 @@ function renderSettingsSection(section) {
     ? `<div class="settings-info-card"><strong>Permanent account deletion</strong><p>Deleting an account permanently removes its profile, direct chats, messages, community data and uploaded media. This cannot be undone. Your own account and other owners are protected.</p><button id="refreshAdminAccounts" class="notification-button" type="button">Refresh account list</button></div>
        <div id="adminAccountList" class="admin-account-list" aria-live="polite"><p class="settings-help">Loading accounts…</p></div>`
     : section === "assistant"
-      ? `<div class="settings-info-card"><strong>English Mingle Assistant</strong><p>This free assistant answers Mingle support questions. It runs on the device and does not send questions to a paid AI service.</p></div>
+      ? `<div class="settings-info-card"><strong>English Mingle Assistant</strong><p>Mingle help questions are answered on this device. For questions outside Mingle, choose Search Google to open Google with only the question you entered. Do not search passwords, private messages, or other sensitive information.</p></div>
          <div id="assistantHistory" class="settings-info-card" aria-live="polite"></div>
          <form id="assistantForm" class="form"><div class="field"><label for="assistantQuestion">Ask in English</label><input id="assistantQuestion" maxlength="500" autocomplete="off" placeholder="How do I add a contact?" required></div><button class="primary" type="submit">Ask</button></form>`
     : section === "privacy"
@@ -2299,6 +2331,7 @@ function renderSettingsSection(section) {
       : section === "notifications"
         ? `<div class="settings-info-card"><strong>Message notifications</strong><p id="notificationStatus">${notificationStatusText()}</p><button id="notificationButton" class="notification-button" type="button">${notificationButtonText()}</button></div>
            <div class="settings-info-card"><strong>Background delivery</strong><p>Website push works only after the site owner configures push credentials. Android APK notifications also require Firebase Cloud Messaging setup. If the phone is powered off, notifications and calls cannot arrive.</p></div>
+           <div class="settings-info-card"><strong>Test background delivery</strong><p id="testNotificationStatus">Send a test push to this account's registered devices.</p><button id="sendTestNotificationButton" class="notification-button" type="button">Send test notification</button></div>
            <label class="settings-toggle"><span><strong>Message sound</strong><small>Use the device notification sound when available</small></span><input id="messageSoundToggle" type="checkbox" checked></label>
            <label class="settings-toggle"><span><strong>Incoming call ringtone</strong><small>Play the Mingle ringtone while the app is open</small></span><input id="callRingtoneToggle" type="checkbox" checked></label>`
         : section === "storage"
@@ -2318,7 +2351,7 @@ function renderSettingsSection(section) {
   } else if (section === "assistant") {
     const history = $("#assistantHistory");
     history.innerHTML = assistantMessages.map((item) =>
-      `<p><strong>${item.role === "user" ? "You" : "Mingle Assistant"}:</strong> ${escapeText(item.text)}</p>`
+      `<p><strong>${item.role === "user" ? "You" : "Mingle Assistant"}:</strong> ${escapeText(item.text)}${item.searchUrl ? `<br><a href="${escapeText(item.searchUrl)}" target="_blank" rel="noopener noreferrer">Search Google</a>` : ""}</p>`
     ).join("") || "<p>Ask a Mingle support question in English.</p>";
     $("#assistantForm").addEventListener("submit", (event) => {
       event.preventDefault();
@@ -2326,7 +2359,16 @@ function renderSettingsSection(section) {
       const question = input.value.trim();
       if (!question) return;
       const answer = getFreeAssistantReply(question);
-      assistantMessages.push({ role: "user", text: question }, { role: "assistant", text: answer });
+      assistantMessages.push(
+        { role: "user", text: question },
+        answer
+          ? { role: "assistant", text: answer }
+          : {
+              role: "assistant",
+              text: "I don't have a Mingle help answer for this. You can search the question on Google:",
+              searchUrl: `https://www.google.com/search?q=${encodeURIComponent(question)}`
+            }
+      );
       assistantMessages = assistantMessages.slice(-20);
       input.value = "";
       renderSettingsSection("assistant");
@@ -2361,6 +2403,7 @@ function renderSettingsSection(section) {
     ringtoneToggle.addEventListener("change", () => setPreference("mingle-call-ringtone", ringtoneToggle.checked ? "on" : "off"));
     $("#notificationButton").disabled = !window.MingleAndroid && "Notification" in window && Notification.permission === "granted";
     $("#notificationButton").addEventListener("click", () => void enableNotifications());
+    $("#sendTestNotificationButton").addEventListener("click", () => void sendTestNotification());
   } else if (section === "storage") {
     void updateStorageUsage();
   }
