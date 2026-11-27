@@ -32,7 +32,7 @@ const settingsSections = [
   { id: "chats", icon: "▤", title: "Chats", description: "Theme and chat wallpaper" },
   { id: "notifications", icon: "♧", title: "Notifications", description: "Message alerts and this device's permission" },
   { id: "storage", icon: "▦", title: "Storage and data", description: "Device storage and shared media limits" },
-  { id: "premium", icon: "★", title: "Premium", description: "Plans and payment availability" },
+  { id: "premium", icon: "★", title: "Premium", description: "Choose a premium plan" },
   { id: "help", icon: "?", title: "Help", description: "Setup information and Mingle details" },
   { id: "invite", icon: "↗", title: "Invite a friend", description: "Share the Mingle website" }
 ];
@@ -40,6 +40,7 @@ const settingsSections = [
 let authMode = "login";
 let profile = null;
 let isOwner = false;
+let isPremium = false;
 let pendingPasswordResetAccount = null;
 let chats = [];
 let currentPeer = null;
@@ -1390,6 +1391,7 @@ function showLogin() {
   clearInterval(messageTimer);
   profile = null;
   isOwner = false;
+  isPremium = false;
   currentPeer = null;
   currentGroup = null;
   currentChannel = null;
@@ -1413,6 +1415,9 @@ async function showApp(userProfile) {
   const { data: userData, error: userError } = await db().auth.getUser();
   if (userError) throw new Error(userError.message);
   isOwner = userData.user?.app_metadata?.role === "owner";
+  const { data: premiumState, error: premiumError } = await db().rpc("is_mingle_premium");
+  if (premiumError) throw new Error(premiumError.message);
+  isPremium = Boolean(premiumState);
   currentPeer = null;
   currentGroup = null;
   page = "chats";
@@ -2582,8 +2587,13 @@ function renderSettingsSection(section) {
     openSettingsPage();
     return;
   }
-  const body = section === "admin"
-    ? `<div class="settings-info-card"><strong>Permanent account deletion</strong><p>Deleting an account permanently removes its profile, direct chats, messages, community data and uploaded media. This cannot be undone. Your own account and other owners are protected.</p><button id="refreshAdminAccounts" class="notification-button" type="button">Refresh account list</button></div>
+  const body = section === "premium"
+    ? `<div class="settings-info-card"><strong>${isPremium ? "Premium active" : "Choose a premium plan"}</strong><p>${isPremium ? "Your Premium membership is active." : "Pay with Google Pay, PhonePe, or another UPI app. The owner verifies payment and activates your plan manually."}</p></div>
+       <div class="premium-plan-grid">${[[3,"3 months","₹3"],[5,"5 months","₹5"],[12,"1 year","₹12"],[24,"2 years","₹24"],[36,"3 years","₹20"]].map(([months,duration,price]) => `<button class="premium-plan" type="button" data-premium-plan="${months}"><strong>${duration}</strong><b>${price}</b><small>Mingle Premium</small></button>`).join("")}</div>
+       <div class="settings-info-card"><strong>Pay with Google Pay or PhonePe</strong><p>Scan the QR or pay to the UPI ID, then submit the UPI transaction ID (UTR) for verification.</p><div id="premiumPaymentDetails"><p class="settings-help">Payment details are not configured yet. Contact the Mingle owner.</p></div></div>`
+    : section === "admin"
+    ? `<div class="settings-info-card"><strong>Premium UPI payment setup</strong><p>Add your public UPI ID and an optional hosted QR image URL.</p><form id="premiumPaymentSettingsForm" class="form"><div class="field"><label for="premiumUpiId">UPI ID</label><input id="premiumUpiId" maxlength="120" placeholder="name@upi"></div><div class="field"><label for="premiumQrUrl">QR image URL (optional)</label><input id="premiumQrUrl" maxlength="1000" type="url" placeholder="https://…"></div><button class="primary" type="submit">Save payment details</button></form></div>
+       <div class="settings-info-card"><strong>Permanent account deletion</strong><p>Deleting an account permanently removes its profile, direct chats, messages, community data and uploaded media. This cannot be undone. Your own account and other owners are protected.</p><button id="refreshAdminAccounts" class="notification-button" type="button">Refresh account list</button></div>
        <div id="adminAccountList" class="admin-account-list" aria-live="polite"><p class="settings-help">Loading accounts…</p></div>`
     : section === "assistant"
       ? `<div class="settings-info-card"><strong>English Mingle Assistant</strong><p>Mingle help questions are answered on this device. For questions outside Mingle, choose Search Google to open Google with only the question you entered. Do not search passwords, private messages, or other sensitive information.</p></div>
@@ -2625,7 +2635,12 @@ function renderSettingsSection(section) {
   $("#settingsBackButton").addEventListener("click", openSettingsPage);
   if (section === "admin") {
     $("#refreshAdminAccounts").addEventListener("click", () => void loadAdminAccounts());
+    void loadOwnerPaymentSettings();
+    $("#premiumPaymentSettingsForm").addEventListener("submit", (event) => void saveOwnerPaymentSettings(event));
     void loadAdminAccounts();
+  } else if (section === "premium") {
+    void loadPremiumPaymentDetails();
+    contentPanel.querySelectorAll("[data-premium-plan]").forEach((button) => button.addEventListener("click", () => void requestPremiumPlan(Number(button.dataset.premiumPlan))));
   } else if (section === "assistant") {
     const history = $("#assistantHistory");
     history.innerHTML = assistantMessages.map((item) =>
@@ -2687,6 +2702,60 @@ function renderSettingsSection(section) {
   }
 }
 
+async function requestPremiumPlan(months) {
+  if (![3, 5, 12, 24, 36].includes(months)) return;
+  const reference = window.prompt("Pay using the QR/UPI ID above, then enter the UPI transaction ID (UTR):");
+  if (reference === null) return;
+  if (!reference.trim()) { showToast("Enter the UPI transaction ID so the owner can verify your payment."); return; }
+  try {
+    const { error } = await db().rpc("request_premium_plan", { p_plan_months: months, p_payment_reference: reference.trim() });
+    if (error) throw new Error(error.message);
+    showToast("Payment request submitted. The Mingle owner will verify and activate it.");
+  } catch (error) { showToast(`Could not submit payment request: ${error.message}`); }
+}
+
+async function loadPremiumPaymentDetails() {
+  const container = $("#premiumPaymentDetails");
+  if (!container) return;
+  try {
+    const { data, error } = await db().rpc("get_premium_payment_details");
+    if (error) throw new Error(error.message);
+    const upiId = String(data?.upi_id || "").trim();
+    const qrUrl = String(data?.qr_image_url || "").trim();
+    if (!upiId && !qrUrl) return;
+    container.innerHTML = `${qrUrl ? `<img src="${escapeText(qrUrl)}" alt="Premium UPI QR code" style="display:block;max-width:220px;width:100%;margin:12px auto;border-radius:10px" loading="lazy">` : ""}${upiId ? `<p><strong>UPI ID:</strong> <code>${escapeText(upiId)}</code></p>` : ""}<p class="settings-help">Pay the exact amount for your selected plan.</p>`;
+  } catch (error) { container.textContent = `Could not load payment details: ${error.message}`; }
+}
+
+async function loadOwnerPaymentSettings() {
+  const { data, error } = await db().rpc("get_premium_payment_details");
+  if (error) { showToast(`Could not load payment settings: ${error.message}`); return; }
+  $("#premiumUpiId").value = data?.upi_id || "";
+  $("#premiumQrUrl").value = data?.qr_image_url || "";
+}
+
+async function saveOwnerPaymentSettings(event) {
+  event.preventDefault();
+  const upiId = $("#premiumUpiId").value.trim();
+  const qrUrl = $("#premiumQrUrl").value.trim();
+  if (!upiId && !qrUrl) { showToast("Enter a UPI ID or QR image URL."); return; }
+  try {
+    const { error } = await db().rpc("admin_set_premium_payment_details", { p_upi_id: upiId, p_qr_image_url: qrUrl });
+    if (error) throw new Error(error.message);
+    showToast("UPI payment details saved.");
+  } catch (error) { showToast(`Could not save payment details: ${error.message}`); }
+}
+
+async function reviewPremiumRequest(requestId, approve) {
+  if (!isOwner) return;
+  try {
+    const { error } = await db().rpc("admin_review_premium_request", { p_request_id: requestId, p_approve: approve });
+    if (error) throw new Error(error.message);
+    showToast(approve ? "Payment verified and Premium activated." : "Payment request rejected.");
+    await loadAdminAccounts();
+  } catch (error) { showToast(`Could not review payment request: ${error.message}`); }
+}
+
 async function loadAdminAccounts() {
   const list = $("#adminAccountList");
   if (!list) return;
@@ -2702,14 +2771,19 @@ async function loadAdminAccounts() {
       list.textContent = "No accounts found.";
       return;
     }
-    list.innerHTML = data.map((account) => `<article class="admin-account-row">
+    const { data: requests, error: requestError } = await db().rpc("admin_list_premium_requests");
+    if (requestError) throw new Error(requestError.message);
+    const pending = requests || [];
+    list.innerHTML = `${pending.length ? `<section class="settings-info-card"><strong>Pending UPI payment requests</strong>${pending.map((request) => `<article class="admin-account-row"><div class="admin-account-copy"><strong>${escapeText(request.name)} · ₹${request.amount_rs} / ${request.plan_months} months</strong><small>${escapeText(request.email || "No email")} · ${escapeText(request.phone)} · UTR: ${escapeText(request.payment_reference || "Not provided")}</small></div><div class="admin-account-actions"><button class="primary" type="button" data-approve-premium="${escapeText(request.id)}">Approve & activate</button><button class="secondary" type="button" data-reject-premium="${escapeText(request.id)}">Reject</button></div></article>`).join("")}</section>` : ""}${data.map((account) => `<article class="admin-account-row">
       <div class="admin-account-copy"><strong>${escapeText(account.name)}</strong>
         <small>${escapeText(account.email || "No email")} · ${escapeText(account.phone)}</small></div>
       <div class="admin-account-actions">
         <button class="secondary admin-reset-button" type="button" data-admin-reset="${escapeText(account.id)}" ${account.is_owner || account.id === profile?.id ? "disabled" : ""}>Reset password</button>
         <button class="danger-button admin-delete-button" type="button" data-admin-delete="${escapeText(account.id)}" ${account.is_owner || account.id === profile?.id ? "disabled" : ""}>${account.is_owner ? "Owner" : "Delete"}</button>
       </div>
-    </article>`).join("");
+    </article>`).join("")}`;
+    list.querySelectorAll("[data-approve-premium]").forEach((button) => button.addEventListener("click", () => void reviewPremiumRequest(button.dataset.approvePremium, true)));
+    list.querySelectorAll("[data-reject-premium]").forEach((button) => button.addEventListener("click", () => void reviewPremiumRequest(button.dataset.rejectPremium, false)));
     list.querySelectorAll("[data-admin-reset]").forEach((button) => {
       button.addEventListener("click", () => {
         const account = data.find((item) => item.id === button.dataset.adminReset);

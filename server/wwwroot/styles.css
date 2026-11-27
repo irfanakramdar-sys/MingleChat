@@ -199,6 +199,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visib
 .settings-info-card, .settings-option-group { margin-bottom: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
 .settings-info-card strong, .settings-option-group h3 { margin: 0; color: #29382f; font-size: 13px; }
 .settings-info-card p, .settings-help { margin: 8px 0 0; color: #78867d; font-size: 12px; line-height: 1.65; }
+.premium-plan-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin-bottom: 12px; }
+.premium-plan { min-height: 100px; display: grid; align-content: center; gap: 6px; border: 1px solid #9cc0aa; border-radius: 12px; background: #f2f8f3; color: #315840; text-align: center; }
+.premium-plan:hover { border-color: var(--green); background: #eaf5ed; }
+.premium-plan strong, .premium-plan b, .premium-plan small { display: block; }
+.premium-plan strong { font-size: 12px; }
+.premium-plan b { color: var(--green); font-size: 20px; }
+.premium-plan small { color: #78867d; font-size: 9px; }
 .settings-option-group h3 { margin-bottom: 12px; }
 .settings-choice-row { display: flex; gap: 8px; }
 .settings-choice { min-height: 40px; flex: 1; border: 1px solid var(--line); border-radius: 9px; background: #fbfcfa; color: #526057; font-size: 12px; font-weight: 650; }
@@ -276,6 +283,8 @@ dialog > form > p { margin: 8px 0 16px; color: #7f8b83; font-size: 12px; line-he
 .text-button:disabled { opacity: .6; }
 .feedback.success { color: #27724b; }
 @media (max-width: 680px) {
+  .premium-plan-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .premium-plan:last-child { grid-column: 1 / -1; }
   .auth-screen { align-content: start; padding: max(20px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(20px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); }
   .auth-card { padding: 27px 22px; }
   .conversation-actions .chat-action-button { display: none; }

@@ -9,6 +9,8 @@
 
   alter table public.profiles add column if not exists email text;
   alter table public.profiles alter column account_number drop not null;
+  alter table public.profiles add column if not exists is_premium boolean not null default false;
+  alter table public.profiles add column if not exists premium_until timestamptz;
 
   create unique index if not exists profiles_email_lower_unique_idx
     on public.profiles (pg_catalog.lower(email))
@@ -201,6 +203,32 @@
 
   create index if not exists push_subscriptions_user_idx
     on public.push_subscriptions (user_id);
+
+  create table if not exists public.premium_requests (
+    id uuid primary key default gen_random_uuid(),
+    user_id uuid not null references public.profiles (id) on delete cascade,
+    plan_months integer not null check (plan_months in (3, 5, 12, 24, 36)),
+    amount_rs integer not null check (amount_rs in (3, 5, 12, 24, 20)),
+    status text not null default 'pending' check (status in ('pending', 'approved', 'rejected')),
+    payment_reference text not null,
+    created_at timestamptz not null default now(),
+    reviewed_at timestamptz
+  );
+  create index if not exists premium_requests_status_created_idx on public.premium_requests (status, created_at desc);
+  alter table public.premium_requests enable row level security;
+  drop policy if exists "Users can view their premium requests" on public.premium_requests;
+  create policy "Users can view their premium requests" on public.premium_requests for select to authenticated using (user_id = (select auth.uid()));
+
+  create table if not exists public.premium_payment_settings (
+    id boolean primary key default true check (id),
+    upi_id text not null default '',
+    qr_image_url text not null default '',
+    updated_at timestamptz not null default now()
+  );
+  insert into public.premium_payment_settings (id) values (true) on conflict (id) do nothing;
+  alter table public.premium_payment_settings enable row level security;
+  drop policy if exists "Authenticated users can read premium payment details" on public.premium_payment_settings;
+  create policy "Authenticated users can read premium payment details" on public.premium_payment_settings for select to authenticated using (true);
 
   create table if not exists public.admin_media_cleanup (
     owner_id uuid not null references auth.users (id) on delete cascade,
@@ -433,6 +461,7 @@
   grant select, insert on public.group_messages to authenticated;
   grant select, insert on public.call_sessions, public.call_signals to authenticated;
   grant select, insert, update, delete on public.push_subscriptions to authenticated;
+  grant select on public.premium_requests, public.premium_payment_settings to authenticated;
   revoke all on public.profile_lookup_attempts from anon, authenticated;
 
   drop policy if exists "Mingle chat members can view message media" on storage.objects;
@@ -491,6 +520,101 @@
       where account.id = auth.uid()
         and account.raw_app_meta_data ->> 'role' = 'owner'
     );
+  $$;
+
+  create or replace function public.is_mingle_premium()
+  returns boolean
+  language sql
+  stable
+  security definer
+  set search_path = ''
+  as $$
+    select auth.uid() is not null and (
+      public.is_mingle_owner()
+      or exists (select 1 from public.profiles p where p.id = auth.uid() and p.is_premium and (p.premium_until is null or p.premium_until > now()))
+    );
+  $$;
+
+  create or replace function public.request_premium_plan(p_plan_months integer, p_payment_reference text)
+  returns uuid
+  language plpgsql
+  security definer
+  set search_path = ''
+  as $$
+  declare
+    v_amount integer;
+    v_request_id uuid;
+  begin
+    if auth.uid() is null then raise exception 'Please log in to continue.'; end if;
+    if pg_catalog.nullif(pg_catalog.btrim(coalesce(p_payment_reference, '')), '') is null then raise exception 'Enter the UPI transaction ID.'; end if;
+    v_amount := case p_plan_months when 3 then 3 when 5 then 5 when 12 then 12 when 24 then 24 when 36 then 20 else null end;
+    if v_amount is null then raise exception 'Choose a valid premium plan.'; end if;
+    insert into public.premium_requests (user_id, plan_months, amount_rs, payment_reference)
+    values (auth.uid(), p_plan_months, v_amount, pg_catalog.btrim(p_payment_reference)) returning id into v_request_id;
+    return v_request_id;
+  end;
+  $$;
+
+  create or replace function public.get_premium_payment_details()
+  returns jsonb
+  language sql
+  security definer
+  set search_path = ''
+  as $$
+    select pg_catalog.jsonb_build_object('upi_id', s.upi_id, 'qr_image_url', s.qr_image_url) from public.premium_payment_settings s where s.id = true;
+  $$;
+
+  create or replace function public.admin_set_premium_payment_details(p_upi_id text, p_qr_image_url text)
+  returns void
+  language plpgsql
+  security definer
+  set search_path = ''
+  as $$
+  begin
+    if not public.is_mingle_owner() then raise exception 'Only the Mingle owner can manage payment details.'; end if;
+    if pg_catalog.length(pg_catalog.btrim(coalesce(p_upi_id, ''))) > 120 then raise exception 'UPI ID is too long.'; end if;
+    if pg_catalog.length(pg_catalog.btrim(coalesce(p_qr_image_url, ''))) > 1000 then raise exception 'QR image URL is too long.'; end if;
+    update public.premium_payment_settings set upi_id = pg_catalog.btrim(coalesce(p_upi_id, '')), qr_image_url = pg_catalog.btrim(coalesce(p_qr_image_url, '')), updated_at = now() where id = true;
+  end;
+  $$;
+
+  create or replace function public.admin_list_premium_requests()
+  returns table(id uuid, user_id uuid, name text, email text, phone text, plan_months integer, amount_rs integer, payment_reference text, created_at timestamptz)
+  language plpgsql
+  security definer
+  set search_path = ''
+  as $$
+  begin
+    if not public.is_mingle_owner() then raise exception 'Only the Mingle owner can review payment requests.'; end if;
+    return query select r.id, r.user_id, p.name, p.email, p.phone, r.plan_months, r.amount_rs, r.payment_reference, r.created_at
+      from public.premium_requests r join public.profiles p on p.id = r.user_id where r.status = 'pending' order by r.created_at asc;
+  end;
+  $$;
+
+  create or replace function public.admin_review_premium_request(p_request_id uuid, p_approve boolean)
+  returns timestamptz
+  language plpgsql
+  security definer
+  set search_path = ''
+  as $$
+  declare
+    v_request public.premium_requests%rowtype;
+    v_until timestamptz;
+  begin
+    if not public.is_mingle_owner() then raise exception 'Only the Mingle owner can review payment requests.'; end if;
+    select * into v_request from public.premium_requests where id = p_request_id and status = 'pending' for update;
+    if not found then raise exception 'This payment request is no longer pending.'; end if;
+    if p_approve then
+      update public.profiles set is_premium = true,
+        premium_until = greatest(coalesce(premium_until, now()), now()) + make_interval(months => v_request.plan_months)
+        where id = v_request.user_id returning premium_until into v_until;
+      if v_until is null then raise exception 'That account does not exist.'; end if;
+      update public.premium_requests set status = 'approved', reviewed_at = now() where id = p_request_id;
+      return v_until;
+    end if;
+    update public.premium_requests set status = 'rejected', reviewed_at = now() where id = p_request_id;
+    return null;
+  end;
   $$;
 
   create or replace function public.can_delete_staged_account_media(p_storage_path text)
@@ -1219,12 +1343,24 @@
   $$;
 
   revoke all on function public.is_mingle_owner() from public, anon;
+  revoke all on function public.is_mingle_premium() from public, anon;
+  revoke all on function public.request_premium_plan(integer, text) from public, anon;
+  revoke all on function public.get_premium_payment_details() from public, anon;
+  revoke all on function public.admin_set_premium_payment_details(text, text) from public, anon;
+  revoke all on function public.admin_list_premium_requests() from public, anon;
+  revoke all on function public.admin_review_premium_request(uuid, boolean) from public, anon;
   revoke all on function public.can_delete_staged_account_media(text) from public, anon;
   revoke all on function public.account_media_paths(uuid) from public, anon, authenticated;
   revoke all on function public.admin_list_accounts() from public, anon;
   revoke all on function public.admin_prepare_account_deletion(uuid) from public, anon;
   revoke all on function public.admin_delete_account(uuid) from public, anon;
   grant execute on function public.is_mingle_owner() to authenticated;
+  grant execute on function public.is_mingle_premium() to authenticated;
+  grant execute on function public.request_premium_plan(integer, text) to authenticated;
+  grant execute on function public.get_premium_payment_details() to authenticated;
+  grant execute on function public.admin_set_premium_payment_details(text, text) to authenticated;
+  grant execute on function public.admin_list_premium_requests() to authenticated;
+  grant execute on function public.admin_review_premium_request(uuid, boolean) to authenticated;
   grant execute on function public.can_delete_staged_account_media(text) to authenticated;
   grant execute on function public.admin_list_accounts() to authenticated;
   grant execute on function public.admin_prepare_account_deletion(uuid) to authenticated;
